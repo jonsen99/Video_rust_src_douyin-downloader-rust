@@ -1,5 +1,4 @@
 # Build outputs
-dist/
 target/
 
 # IDE
@@ -11,6 +10,9 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local runtime logs
+.runlogs/
 
 # Claude
 .claude/

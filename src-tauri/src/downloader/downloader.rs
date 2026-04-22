@@ -1,42 +1,73 @@
 //! 下载器实现
 
-use crate::api::types::{DownloadStatus, DownloadTask, MediaType, VideoInfo};
+use crate::api::types::{DownloadMediaItem, DownloadStatus, DownloadTask, MediaType, VideoInfo};
 use crate::api::DouyinClient;
-use crate::config::AppConfig;
+use crate::config::{get_user_agent, AppConfig};
 use crate::history::HistoryManager;
 use anyhow::{anyhow, Result};
 use chrono::Local;
 use futures::StreamExt;
-use std::path::PathBuf;
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, COOKIE, RANGE, REFERER, USER_AGENT,
+};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 
-/// 下载进度消息
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DownloadProgress {
-    pub task_id: String,
-    pub status: DownloadStatus,
-    pub progress: f32,
-    pub downloaded_size: u64,
-    pub total_size: u64,
-    pub speed: u64,
-    pub error_msg: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownloadQuality {
+    Auto,
+    Highest,
+    H264,
+    Smallest,
+}
+
+impl DownloadQuality {
+    fn from_config(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "highest" => Self::Highest,
+            "h264" => Self::H264,
+            "smallest" => Self::Smallest,
+            _ => Self::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct VideoCandidate {
+    url: String,
+    metric: i64,
+    is_h264: bool,
+    is_download_addr: bool,
+    is_lowbr: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloaderEvent {
+    pub name: &'static str,
+    pub payload: serde_json::Value,
 }
 
 /// 下载器
+#[derive(Clone)]
 pub struct Downloader {
     client: reqwest::Client,
     config: AppConfig,
     tasks: Arc<Mutex<Vec<DownloadTask>>>,
-    progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+    progress_tx: Option<mpsc::Sender<DownloaderEvent>>,
     cancel_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+    pause_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
     history: Arc<Mutex<HistoryManager>>,
 }
 
 impl Downloader {
-    pub fn new(config: AppConfig, progress_tx: Option<mpsc::Sender<DownloadProgress>>) -> Result<Self> {
+    pub fn new(
+        config: AppConfig,
+        progress_tx: Option<mpsc::Sender<DownloaderEvent>>,
+    ) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
             .danger_accept_invalid_certs(false);
@@ -55,50 +86,84 @@ impl Downloader {
             tasks: Arc::new(Mutex::new(Vec::new())),
             progress_tx,
             cancel_tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            pause_tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
             history: Arc::new(Mutex::new(HistoryManager::load())),
         })
     }
 
-    /// 添加下载任务
+    pub fn update_config(&mut self, config: AppConfig) {
+        self.config = config;
+    }
+
+    /// 检查是否已下载（用于去重）
+    pub async fn is_downloaded(&self, aweme_id: &str) -> bool {
+        let history = self.history.lock().await;
+        history.is_downloaded(aweme_id)
+    }
+
+    /// 添加视频下载任务
     pub async fn add_task(&self, video: &VideoInfo, save_path: Option<PathBuf>) -> Result<String> {
-        let task_id = uuid::Uuid::new_v4().to_string();
-
-        // 确定下载 URL
-        let url = if video.is_image {
-            video
-                .image_urls
-                .as_ref()
-                .and_then(|urls| urls.first().cloned())
-                .ok_or_else(|| anyhow!("No image URLs"))?
-        } else {
-            DouyinClient::get_no_watermark_url(video)
-                .ok_or_else(|| anyhow!("No video URL"))?
-        };
-
-        // 确定保存路径
         let base_path = save_path.unwrap_or_else(|| PathBuf::from(&self.config.download_path));
-        let filename = self.generate_filename(video);
-
-        // 创建作者目录
         let author_dir = base_path.join(sanitize_filename(&video.author.nickname));
-        let file_path = author_dir.join(&filename);
 
-        // 创建任务
+        // 检查是否已下载（去重）
+        let downloaded = load_downloaded_set(&author_dir).await;
+        if downloaded.contains(&video.aweme_id) {
+            return Err(anyhow!("视频已下载，跳过: {}", video.aweme_id));
+        }
+
+        let media_urls = self.collect_download_media_items(video);
+        self.add_media_task(
+            video.aweme_id.clone(),
+            video.desc.clone(),
+            video.author.nickname.clone(),
+            video.author.uid.clone(),
+            video.video.cover.clone(),
+            video.media_type.clone(),
+            media_urls,
+            Some(author_dir),
+        )
+        .await
+    }
+
+    /// 添加媒体组下载任务
+    pub async fn add_media_task(
+        &self,
+        aweme_id: String,
+        title: String,
+        author: String,
+        author_id: String,
+        cover: String,
+        media_type: MediaType,
+        media_urls: Vec<DownloadMediaItem>,
+        save_path: Option<PathBuf>,
+    ) -> Result<String> {
+        if media_urls.is_empty() {
+            return Err(anyhow!("No media URLs"));
+        }
+
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let base_path = save_path.unwrap_or_else(|| PathBuf::from(&self.config.download_path));
+        let author_dir = base_path.join(self.sanitize_author_dir(&author));
+        let filename = self.generate_filename_base(&title, &aweme_id);
+
         let task = DownloadTask {
             id: task_id.clone(),
-            aweme_id: video.aweme_id.clone(),
-            url: url.clone(),
-            title: video.desc.clone(),
-            author: video.author.nickname.clone(),
-            author_id: video.author.uid.clone(),
-            cover: video.video.cover.clone(),
-            save_path: file_path.to_string_lossy().to_string(),
-            filename: filename.clone(),
-            media_type: if video.is_image {
-                MediaType::Image
-            } else {
-                MediaType::Video
-            },
+            aweme_id,
+            url: media_urls
+                .first()
+                .map(|item| item.url.clone())
+                .unwrap_or_default(),
+            media_urls: media_urls.clone(),
+            title,
+            author,
+            author_id,
+            cover,
+            save_path: author_dir.to_string_lossy().to_string(),
+            filename,
+            media_type,
+            total_files: media_urls.len() as u32,
+            completed_files: 0,
             status: DownloadStatus::Pending,
             progress: 0.0,
             total_size: 0,
@@ -106,28 +171,124 @@ impl Downloader {
             error_msg: None,
             create_time: Local::now().timestamp(),
             complete_time: None,
-            image_urls: video.image_urls.clone(),
+            image_urls: None,
         };
 
         self.tasks.lock().await.push(task);
         Ok(task_id)
     }
 
-    /// 生成文件名
-    fn generate_filename(&self, video: &VideoInfo) -> String {
-        let ext = if video.is_image { "jpg" } else { "mp4" };
-        let author = sanitize_filename(&video.author.nickname);
-        let title = sanitize_filename(&video.desc);
+    fn select_video_download_url(&self, video: &VideoInfo) -> Option<String> {
+        let quality = DownloadQuality::from_config(&self.config.download_quality);
+        let candidates = collect_video_candidates(video);
 
-        let title = if title.len() > 50 {
-            format!("{}...", &title[..47])
-        } else if title.is_empty() {
-            video.aweme_id.clone()
-        } else {
-            title
+        if candidates.is_empty() {
+            return DouyinClient::get_no_watermark_url(video);
+        }
+
+        let selected = match quality {
+            DownloadQuality::Auto => candidates
+                .iter()
+                .find(|candidate| candidate.is_download_addr)
+                .or_else(|| candidates.iter().find(|candidate| candidate.is_h264))
+                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
+                .or_else(|| candidates.first()),
+            DownloadQuality::Highest => candidates
+                .iter()
+                .find(|candidate| candidate.is_download_addr)
+                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
+                .or_else(|| candidates.first()),
+            DownloadQuality::H264 => candidates
+                .iter()
+                .filter(|candidate| candidate.is_h264)
+                .max_by_key(|candidate| candidate.metric)
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|candidate| candidate.is_download_addr)
+                })
+                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
+                .or_else(|| candidates.first()),
+            DownloadQuality::Smallest => candidates
+                .iter()
+                .find(|candidate| candidate.is_lowbr)
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .filter(|candidate| candidate.metric > 0)
+                        .min_by_key(|candidate| candidate.metric)
+                })
+                .or_else(|| candidates.iter().find(|candidate| candidate.is_h264))
+                .or_else(|| candidates.first()),
         };
 
-        format!("{}_{}.{}", author, title, ext)
+        selected.map(|candidate| candidate.url.clone())
+    }
+
+    fn sanitize_author_dir(&self, author: &str) -> String {
+        let author = sanitize_filename(author);
+        if author.is_empty() {
+            "未知作者".to_string()
+        } else {
+            author
+        }
+    }
+
+    fn generate_filename_base(&self, title: &str, aweme_id: &str) -> String {
+        let title = sanitize_filename(title);
+        if title.chars().count() > 50 {
+            format!("{}...", truncate_chars(&title, 47))
+        } else if title.is_empty() {
+            if aweme_id.trim().is_empty() {
+                "未命名作品".to_string()
+            } else {
+                aweme_id.to_string()
+            }
+        } else {
+            title
+        }
+    }
+
+    fn collect_download_media_items(&self, video: &VideoInfo) -> Vec<DownloadMediaItem> {
+        let mut items = Vec::new();
+
+        if let Some(urls) = &video.live_photo_urls {
+            for url in urls {
+                if !url.trim().is_empty() {
+                    items.push(DownloadMediaItem {
+                        r#type: "live_photo".to_string(),
+                        url: url.clone(),
+                    });
+                }
+            }
+        }
+
+        if let Some(urls) = &video.image_urls {
+            for url in urls {
+                if !url.trim().is_empty() {
+                    items.push(DownloadMediaItem {
+                        r#type: "image".to_string(),
+                        url: url.clone(),
+                    });
+                }
+            }
+        }
+
+        if items.is_empty() {
+            if let Some(url) = self.select_video_download_url(video) {
+                items.push(DownloadMediaItem {
+                    r#type: "video".to_string(),
+                    url,
+                });
+            } else if let Some(url) = DouyinClient::get_no_watermark_url(video) {
+                items.push(DownloadMediaItem {
+                    r#type: "video".to_string(),
+                    url,
+                });
+            }
+        }
+
+        items
     }
 
     /// 开始下载
@@ -135,14 +296,16 @@ impl Downloader {
         let tasks = self.tasks.clone();
         let progress_tx = self.progress_tx.clone();
         let client = self.client.clone();
+        let config = self.config.clone();
         let history = self.history.clone();
         let task_id_owned = task_id.to_string();
         let cancel_tokens = self.cancel_tokens.clone();
 
-        // 设置取消标志
-        cancel_tokens.lock().await.insert(task_id_owned.clone(), false);
+        cancel_tokens
+            .lock()
+            .await
+            .insert(task_id_owned.clone(), false);
 
-        // 更新状态为下载中
         {
             let mut tasks_lock = tasks.lock().await;
             if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
@@ -151,179 +314,332 @@ impl Downloader {
         }
 
         tokio::spawn(async move {
-            if let Err(e) = Self::download_file(
+            if let Err(error) = Self::download_media_group(
                 client,
+                config,
                 tasks.clone(),
                 task_id_owned.clone(),
-                progress_tx,
+                progress_tx.clone(),
                 history,
                 cancel_tokens,
-            ).await {
-                log::error!("Download error: {}", e);
+            )
+            .await
+            {
+                log::error!("Download error: {}", error);
 
-                let mut tasks_lock = tasks.lock().await;
-                if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id_owned) {
-                    task.status = DownloadStatus::Failed;
-                    task.error_msg = Some(e.to_string());
+                {
+                    let mut tasks_lock = tasks.lock().await;
+                    if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id_owned) {
+                        task.status = DownloadStatus::Failed;
+                        task.error_msg = Some(error.to_string());
+                    }
                 }
+
+                emit_event(
+                    &progress_tx,
+                    "download-failed",
+                    serde_json::json!({
+                        "task_id": task_id_owned,
+                        "error": format!("下载失败: {}", error)
+                    }),
+                )
+                .await;
+
+                emit_event(
+                    &progress_tx,
+                    "download-error",
+                    serde_json::json!({
+                        "task_id": task_id_owned,
+                        "message": format!("下载失败: {}", error)
+                    }),
+                )
+                .await;
             }
         });
 
         Ok(())
     }
 
-    async fn download_file(
+    async fn download_media_group(
         client: reqwest::Client,
+        config: AppConfig,
         tasks: Arc<Mutex<Vec<DownloadTask>>>,
         task_id: String,
-        progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+        progress_tx: Option<mpsc::Sender<DownloaderEvent>>,
         history: Arc<Mutex<HistoryManager>>,
         cancel_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
     ) -> Result<()> {
-        // 更新状态为下载中
-        {
-            let mut tasks_lock = tasks.lock().await;
-            if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
-                task.status = DownloadStatus::Downloading;
-            }
-        }
-
-        // 获取任务信息
-        let (url, save_path, aweme_id, title, author, author_id, cover) = {
+        let task = {
             let tasks_lock = tasks.lock().await;
-            let task = tasks_lock.iter().find(|t| t.id == task_id)
-                .ok_or_else(|| anyhow!("Task not found"))?;
-
-            (
-                task.url.clone(),
-                PathBuf::from(&task.save_path),
-                task.aweme_id.clone(),
-                task.title.clone(),
-                task.author.clone(),
-                task.author_id.clone(),
-                task.cover.clone(),
-            )
+            tasks_lock
+                .iter()
+                .find(|t| t.id == task_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("Task not found"))?
         };
 
-        // 确保目录存在
-        if let Some(parent) = save_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+        let media_count = task.media_urls.len() as u32;
+        if media_count == 0 {
+            return Err(anyhow!("No media URLs"));
         }
 
-        // 开始下载
-        let response = client.get(&url).send().await?;
+        let display_name = truncate_chars(&task.title, 8);
+        let save_dir = PathBuf::from(&task.save_path);
+        let headers = build_download_headers(&config);
 
-        if !response.status().is_success() {
-            return Err(anyhow!("HTTP error: {}", response.status()));
-        }
+        tokio::fs::create_dir_all(&save_dir).await?;
 
-        let total_size = response.content_length().unwrap_or(0);
+        emit_event(
+            &progress_tx,
+            "download-started",
+            serde_json::json!({
+                "task_id": task.id,
+                "desc": task.title,
+                "display_name": display_name,
+                "type": "single_video",
+                "aweme_id": task.aweme_id,
+                "media_type": media_type_name(&task.media_type),
+                "media_count": media_count
+            }),
+        )
+        .await;
 
-        // 更新总大小
-        {
-            let mut tasks_lock = tasks.lock().await;
-            if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
-                task.total_size = total_size;
-            }
-        }
+        emit_event(
+            &progress_tx,
+            "download-progress",
+            serde_json::json!({
+                "task_id": task.id,
+                "progress": 0,
+                "completed": 0,
+                "total": media_count,
+                "status": "starting",
+                "desc": task.title,
+                "display_name": display_name
+            }),
+        )
+        .await;
 
-        let mut file = tokio::fs::File::create(&save_path).await?;
-        let mut downloaded: u64 = 0;
-        let mut stream = response.bytes_stream();
-        let start_time = std::time::Instant::now();
+        let mut downloaded_files = Vec::new();
+        let mut total_downloaded_size = 0u64;
 
-        while let Some(chunk_result) = stream.next().await {
-            // 检查是否取消
+        for (index, media) in task.media_urls.iter().enumerate() {
             if *cancel_tokens.lock().await.get(&task_id).unwrap_or(&false) {
-                let _ = tokio::fs::remove_file(&save_path).await;
                 return Err(anyhow!("Download cancelled"));
             }
 
-            let chunk = chunk_result?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
+            let file_type_display = media_type_display(media.r#type.as_str());
+            emit_event(
+                &progress_tx,
+                "download-log",
+                serde_json::json!({
+                    "task_id": task.id,
+                    "display_name": display_name,
+                    "message": format!("正在下载第 {}/{} 个文件 ({})", index + 1, media_count, file_type_display),
+                    "timestamp": Local::now().format("%H:%M:%S").to_string()
+                }),
+            )
+            .await;
 
-            // 更新进度
-            let progress = if total_size > 0 {
-                (downloaded as f32 / total_size as f32) * 100.0
-            } else {
-                0.0
-            };
+            let response = client
+                .get(&media.url)
+                .headers(headers.clone())
+                .send()
+                .await?;
 
-            {
-                let mut tasks_lock = tasks.lock().await;
-                if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
-                    task.progress = progress;
-                    task.downloaded_size = downloaded;
+            if !response.status().is_success() {
+                return Err(anyhow!("HTTP error: {}", response.status()));
+            }
+
+            let response_size = response.content_length().unwrap_or(0);
+            let file_path = unique_output_path(
+                &save_dir,
+                &task.filename,
+                index,
+                task.media_urls.len(),
+                media.r#type.as_str(),
+            );
+            let mut file = tokio::fs::File::create(&file_path).await?;
+            let mut file_downloaded_size = 0u64;
+            let mut stream = response.bytes_stream();
+            let file_started_at = Instant::now();
+            let mut last_emit_at = Instant::now();
+            let mut last_emit_progress = (index as f32 / media_count as f32) * 100.0;
+
+            downloaded_files.push(file_path.clone());
+
+            while let Some(chunk_result) = stream.next().await {
+                if *cancel_tokens.lock().await.get(&task_id).unwrap_or(&false) {
+                    let _ = tokio::fs::remove_file(&file_path).await;
+                    for downloaded_file in &downloaded_files {
+                        let _ = tokio::fs::remove_file(downloaded_file).await;
+                    }
+                    return Err(anyhow!("Download cancelled"));
+                }
+
+                let chunk = chunk_result?;
+                file.write_all(&chunk).await?;
+                file_downloaded_size += chunk.len() as u64;
+                total_downloaded_size += chunk.len() as u64;
+
+                let elapsed = file_started_at.elapsed().as_secs_f64().max(0.001);
+                let file_progress = if response_size > 0 {
+                    ((file_downloaded_size as f64 / response_size as f64) * 100.0) as f32
+                } else {
+                    0.0
+                }
+                .clamp(0.0, 100.0);
+                let overall_progress =
+                    ((index as f32 + file_progress / 100.0) / media_count as f32) * 100.0;
+                let speed_bps = (file_downloaded_size as f64 / elapsed) as u64;
+                let eta_seconds = if response_size > 0 && speed_bps > 0 {
+                    Some((response_size.saturating_sub(file_downloaded_size) / speed_bps) as u64)
+                } else {
+                    None
+                };
+
+                {
+                    let mut tasks_lock = tasks.lock().await;
+                    if let Some(current_task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
+                        current_task.progress = overall_progress;
+                        current_task.downloaded_size = total_downloaded_size;
+                        current_task.total_size = current_task.total_size.max(response_size);
+                    }
+                }
+
+                let should_emit = last_emit_at.elapsed().as_millis() >= 500
+                    || (overall_progress - last_emit_progress).abs() >= 1.0
+                    || (response_size > 0 && file_downloaded_size >= response_size);
+
+                if should_emit {
+                    emit_event(
+                        &progress_tx,
+                        "download-progress",
+                        serde_json::json!({
+                            "task_id": task.id,
+                            "progress": overall_progress,
+                            "completed": index,
+                            "total": media_count,
+                            "status": "downloading",
+                            "desc": task.title,
+                            "display_name": display_name,
+                            "file_index": index + 1,
+                            "file_total": media_count,
+                            "file_progress": file_progress,
+                            "bytes_downloaded": file_downloaded_size,
+                            "bytes_total": response_size,
+                            "speed_bps": speed_bps,
+                            "eta_seconds": eta_seconds,
+                            "file_type": media.r#type,
+                            "file_type_display": file_type_display
+                        }),
+                    )
+                    .await;
+                    last_emit_at = Instant::now();
+                    last_emit_progress = overall_progress;
                 }
             }
 
-            // 计算速度
-            let elapsed = start_time.elapsed().as_secs();
-            let speed = if elapsed > 0 { downloaded / elapsed } else { 0 };
-
-            // 发送进度
-            if let Some(tx) = &progress_tx {
-                let _ = tx.send(DownloadProgress {
-                    task_id: task_id.clone(),
-                    status: DownloadStatus::Downloading,
-                    progress,
-                    downloaded_size: downloaded,
-                    total_size,
-                    speed,
-                    error_msg: None,
-                }).await;
+            {
+                let mut tasks_lock = tasks.lock().await;
+                if let Some(current_task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
+                    current_task.completed_files = (index + 1) as u32;
+                    current_task.progress = (((index + 1) as f32) / media_count as f32) * 100.0;
+                    current_task.downloaded_size = total_downloaded_size;
+                }
             }
+
+            emit_event(
+                &progress_tx,
+                "download-progress",
+                serde_json::json!({
+                    "task_id": task.id,
+                    "progress": (((index + 1) as f32) / media_count as f32) * 100.0,
+                    "completed": index + 1,
+                    "total": media_count,
+                    "status": "downloading",
+                    "desc": task.title,
+                    "display_name": display_name,
+                    "file_index": index + 1,
+                    "file_total": media_count,
+                    "file_progress": 100,
+                    "bytes_downloaded": file_downloaded_size,
+                    "bytes_total": response_size,
+                    "speed_bps": 0,
+                    "eta_seconds": 0,
+                    "file_type": media.r#type,
+                    "file_type_display": file_type_display
+                }),
+            )
+            .await;
+
+            emit_event(
+                &progress_tx,
+                "download-log",
+                serde_json::json!({
+                    "task_id": task.id,
+                    "display_name": display_name,
+                    "message": format!(
+                        "✅ 第 {}/{} 个文件下载成功 ({})",
+                        index + 1,
+                        media_count,
+                        file_path.file_name().and_then(|value| value.to_str()).unwrap_or_default()
+                    ),
+                    "timestamp": Local::now().format("%H:%M:%S").to_string()
+                }),
+            )
+            .await;
         }
 
-        // 下载完成
         {
             let mut tasks_lock = tasks.lock().await;
-            if let Some(task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
-                task.status = DownloadStatus::Completed;
-                task.progress = 100.0;
-                task.complete_time = Some(Local::now().timestamp());
+            if let Some(current_task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
+                current_task.status = DownloadStatus::Completed;
+                current_task.progress = 100.0;
+                current_task.complete_time = Some(Local::now().timestamp());
+                current_task.completed_files = current_task.total_files;
+                current_task.downloaded_size = total_downloaded_size;
+                current_task.total_size = total_downloaded_size;
             }
         }
 
-        // 添加到历史
-        {
+        if let Some(first_file) = downloaded_files.first() {
             let mut history_lock = history.lock().await;
-            history_lock.add(crate::api::DownloadHistory {
-                aweme_id,
-                title,
-                author,
-                author_id,
-                cover,
-                file_path: save_path.to_string_lossy().to_string(),
-                media_type: "video".to_string(),
-                file_size: downloaded,
+            let _ = history_lock.add(crate::api::DownloadHistory {
+                aweme_id: task.aweme_id.clone(),
+                title: task.title.clone(),
+                author: task.author.clone(),
+                author_id: task.author_id.clone(),
+                cover: task.cover.clone(),
+                file_path: first_file.to_string_lossy().to_string(),
+                media_type: media_type_name(&task.media_type).to_string(),
+                file_size: total_downloaded_size,
                 create_time: Local::now().timestamp(),
-            }).ok();
+            });
         }
 
-        // 发送完成通知
-        if let Some(tx) = &progress_tx {
-            let _ = tx.send(DownloadProgress {
-                task_id: task_id.clone(),
-                status: DownloadStatus::Completed,
-                progress: 100.0,
-                downloaded_size: downloaded,
-                total_size,
-                speed: 0,
-                error_msg: None,
-            }).await;
-        }
+        // 写入本地隐藏去重记录
+        let _ = record_downloaded(&save_dir, &task.aweme_id).await;
+
+        emit_event(
+            &progress_tx,
+            "download-completed",
+            serde_json::json!({
+                "task_id": task.id,
+                "message": format!("下载成功: {}", task.title),
+                "aweme_id": task.aweme_id,
+                "media_type": media_type_name(&task.media_type),
+                "file_count": media_count
+            }),
+        )
+        .await;
 
         Ok(())
     }
 
-    /// 获取任务列表
     pub async fn get_tasks(&self) -> Vec<DownloadTask> {
         self.tasks.lock().await.clone()
     }
 
-    /// 取消任务
     pub async fn cancel_task(&self, task_id: &str) -> Result<()> {
         let mut tokens = self.cancel_tokens.lock().await;
         tokens.insert(task_id.to_string(), true);
@@ -336,17 +652,32 @@ impl Downloader {
         Ok(())
     }
 
-    /// 暂停任务
     pub async fn pause_task(&self, task_id: &str) -> Result<()> {
-        self.cancel_task(task_id).await
+        let mut tokens = self.pause_tokens.lock().await;
+        tokens.insert(task_id.to_string(), true);
+
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            task.status = DownloadStatus::Paused;
+        }
+
+        Ok(())
     }
 
-    /// 恢复任务
     pub async fn resume_task(&self, task_id: &str) -> Result<()> {
-        self.start_download(task_id).await
+        let mut tokens = self.pause_tokens.lock().await;
+        tokens.insert(task_id.to_string(), false);
+
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            if task.status == DownloadStatus::Paused {
+                task.status = DownloadStatus::Pending;
+            }
+        }
+
+        Ok(())
     }
 
-    /// 删除任务
     pub async fn remove_task(&self, task_id: &str) -> Result<()> {
         let mut tasks = self.tasks.lock().await;
         tasks.retain(|t| t.id != task_id);
@@ -354,8 +685,1187 @@ impl Downloader {
         let mut tokens = self.cancel_tokens.lock().await;
         tokens.remove(task_id);
 
+        let mut pause_tokens = self.pause_tokens.lock().await;
+        pause_tokens.remove(task_id);
+
         Ok(())
     }
+
+    /// 发送批量下载开始事件
+    pub async fn emit_batch_started(&self, task_id: &str, nickname: &str, total_videos: usize) {
+        emit_event(
+            &self.progress_tx,
+            "batch-download-started",
+            serde_json::json!({
+                "task_id": task_id,
+                "nickname": nickname,
+                "total_videos": total_videos,
+                "message": format!("开始下载 {} 个视频", total_videos)
+            }),
+        )
+        .await;
+    }
+
+    /// 边获取边下载（流式下载）
+    pub async fn start_streaming_download(
+        &self,
+        client: DouyinClient,
+        sec_uid: String,
+        batch_task_id: String,
+        nickname: String,
+        estimated_total: usize,
+    ) -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        // 初始化取消和暂停标记
+        self.cancel_tokens.lock().await.insert(batch_task_id.clone(), false);
+        self.pause_tokens.lock().await.insert(batch_task_id.clone(), false);
+
+        // 创建视频队列
+        let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoInfo>(32);
+
+        // 状态跟踪
+        let total_discovered = Arc::new(AtomicUsize::new(0));
+        let completed_count = Arc::new(AtomicUsize::new(0));
+        let skipped_count = Arc::new(AtomicUsize::new(0));
+        let failed_count = Arc::new(AtomicUsize::new(0));
+        let fetching_done = Arc::new(tokio::sync::Notify::new());
+
+        // 克隆变量
+        let cancel_tokens = self.cancel_tokens.clone();
+        let pause_tokens = self.pause_tokens.clone();
+        let progress_tx = self.progress_tx.clone();
+        let history = self.history.clone();
+        let tasks = self.tasks.clone();
+        let config = self.config.clone();
+        let http_client = self.client.clone();
+
+        let batch_id = batch_task_id.clone();
+        let batch_id_fetch = batch_task_id.clone();
+        let nickname_clone = nickname.clone();
+        let sec_uid_clone = sec_uid.clone();
+
+        // === 获取任务：分页获取视频并发送到队列 ===
+        let fetch_handle = {
+            let video_tx = video_tx;
+            let total_discovered = total_discovered.clone();
+            let cancel_tokens = cancel_tokens.clone();
+            let pause_tokens = pause_tokens.clone();
+            let batch_id = batch_id_fetch;
+
+            tokio::spawn(async move {
+                let mut cursor: i64 = 0;
+                let mut has_more = true;
+                let page_size = 20u32;
+
+                while has_more {
+                    // 检查取消
+                    if *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false) {
+                        log::info!("Fetch task cancelled");
+                        break;
+                    }
+
+                    // 检查暂停
+                    loop {
+                        let is_paused = *pause_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        let is_cancelled = *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        if is_cancelled || !is_paused {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+
+                    // 获取一页视频
+                    match client.get_user_videos(&sec_uid_clone, cursor, page_size).await {
+                        Ok((videos, next_cursor, more)) => {
+                            has_more = more;
+                            cursor = next_cursor;
+
+                            let video_count = videos.len();
+
+                            for video in videos {
+                                // 检查取消
+                                if *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false) {
+                                    break;
+                                }
+
+                                total_discovered.fetch_add(1, AtomicOrdering::SeqCst);
+
+                                // 发送到下载队列（非阻塞）
+                                if video_tx.send(video).await.is_err() {
+                                    log::info!("Video channel closed");
+                                    has_more = false;
+                                    break;
+                                }
+                            }
+
+                            if video_count == 0 && !more {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to fetch videos: {}", e);
+                            break;
+                        }
+                    }
+
+                    // 短暂延迟避免请求过快
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+
+                // 标记获取完成
+                drop(video_tx);
+                log::info!("Fetch task completed, discovered {} videos", total_discovered.load(AtomicOrdering::SeqCst));
+            })
+        };
+
+        // === 下载任务：从队列取出视频并下载 ===
+        let download_handle = {
+            let mut video_rx = video_rx;
+            let completed = completed_count.clone();
+            let skipped = skipped_count.clone();
+            let failed = failed_count.clone();
+            let cancel_tokens = cancel_tokens.clone();
+            let pause_tokens = pause_tokens.clone();
+            let progress_tx = progress_tx.clone();
+            let history = history.clone();
+            let config = config.clone();
+            let http_client = http_client.clone();
+            let total_discovered = total_discovered.clone();
+            let batch_id = batch_task_id.clone();
+            let estimated = estimated_total;
+
+            tokio::spawn(async move {
+                // 并发控制
+                let max_concurrent = config.max_concurrent.clamp(1, 10);
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+                let mut download_handles = Vec::new();
+
+                loop {
+                    // 检查取消
+                    if *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false) {
+                        break;
+                    }
+
+                    // 检查暂停
+                    loop {
+                        let is_paused = *pause_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        let is_cancelled = *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        if is_cancelled || !is_paused {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+
+                    // 尝试从队列获取视频（带超时，避免永久阻塞）
+                    let video = tokio::select! {
+                        result = video_rx.recv() => {
+                            match result {
+                                Some(v) => v,
+                                None => break, // 通道关闭
+                            }
+                        }
+                        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                            // 超时，检查是否还在获取
+                            continue;
+                        }
+                    };
+
+                    // 获取信号量许可
+                    let permit = match semaphore.clone().acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    };
+
+                    // 检查是否已下载
+                    {
+                        let base_path = PathBuf::from(&config.download_path);
+                        let author_dir = base_path.join(sanitize_filename(&video.author.nickname));
+                        let downloaded = load_downloaded_set(&author_dir).await;
+                        if downloaded.contains(&video.aweme_id) {
+                            skipped.fetch_add(1, AtomicOrdering::SeqCst);
+                            let current = completed.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                            let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+
+                            // 发送进度（跳过的不显示消息）
+                            emit_event(
+                                &progress_tx,
+                                "download-progress",
+                                serde_json::json!({
+                                    "task_id": batch_id,
+                                    "overall_progress": (current as f32 / total as f32 * 100.0) as u32,
+                                    "current_downloaded": current,
+                                    "total_videos": total
+                                }),
+                            ).await;
+
+                            drop(permit);
+                            continue;
+                        }
+                    }
+
+                    // 克隆变量
+                    let history = history.clone();
+                    let cancel_tokens = cancel_tokens.clone();
+                    let pause_tokens = pause_tokens.clone();
+                    let progress_tx = progress_tx.clone();
+                    let batch_id = batch_id.clone();
+                    let completed = completed.clone();
+                    let failed = failed.clone();
+                    let total_discovered = total_discovered.clone();
+                    let estimated = estimated;
+                    let config = config.clone();
+                    let http_client = http_client.clone();
+
+                    let aweme_id = video.aweme_id.clone();
+                    let display_name = truncate_chars(&video.desc, 8);
+                    let start_time = Instant::now();
+
+                    // 启动下载任务
+                    let handle = tokio::spawn(async move {
+                        let result = Self::download_single_video(
+                            http_client,
+                            config,
+                            video,
+                            history,
+                            cancel_tokens.clone(),
+                            pause_tokens.clone(),
+                            batch_id.clone(),
+                            progress_tx.clone(),
+                        ).await;
+
+                        drop(permit);
+
+                        let elapsed = start_time.elapsed();
+
+                        match result {
+                            Ok(_) => {
+                                let current = completed.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                                let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+
+                                // 计算速度
+                                let speed_mbps = if elapsed.as_secs() > 0 {
+                                    current as f64 / elapsed.as_secs_f64()
+                                } else {
+                                    0.0
+                                };
+
+                                emit_event(
+                                    &progress_tx,
+                                    "download-progress",
+                                    serde_json::json!({
+                                        "task_id": batch_id,
+                                        "overall_progress": (current as f32 / total as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total,
+                                        "elapsed_seconds": elapsed.as_secs(),
+                                        "speed_mbps": (speed_mbps * 100.0).round() / 100.0
+                                    }),
+                                ).await;
+                            }
+                            Err(e) => {
+                                failed.fetch_add(1, AtomicOrdering::SeqCst);
+                                log::error!("Download error for {}: {}", aweme_id, e);
+
+                                let current = completed.load(AtomicOrdering::SeqCst);
+                                let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+
+                                emit_event(
+                                    &progress_tx,
+                                    "download-progress",
+                                    serde_json::json!({
+                                        "task_id": batch_id,
+                                        "overall_progress": (current as f32 / total as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total
+                                    }),
+                                ).await;
+                            }
+                        }
+                    });
+
+                    download_handles.push(handle);
+                }
+
+                // 等待所有下载完成
+                futures::future::join_all(download_handles).await;
+                log::info!("Download task completed");
+            })
+        };
+
+        // 等待两个任务完成
+        let (fetch_result, download_result) = tokio::join!(fetch_handle, download_handle);
+
+        if let Err(e) = fetch_result {
+            log::error!("Fetch handle error: {}", e);
+        }
+        if let Err(e) = download_result {
+            log::error!("Download handle error: {}", e);
+        }
+
+        // 发送完成事件
+        let was_cancelled = *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+        let final_completed = completed_count.load(AtomicOrdering::SeqCst);
+        let final_skipped = skipped_count.load(AtomicOrdering::SeqCst);
+        let final_failed = failed_count.load(AtomicOrdering::SeqCst);
+        let final_total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated_total);
+
+        if was_cancelled {
+            emit_event(
+                &self.progress_tx,
+                "batch-download-cancelled",
+                serde_json::json!({
+                    "task_id": batch_task_id,
+                    "message": format!("下载已取消，已完成 {} 个视频", final_completed)
+                }),
+            ).await;
+        } else {
+            emit_event(
+                &self.progress_tx,
+                "batch-download-completed",
+                serde_json::json!({
+                    "task_id": batch_task_id,
+                    "total_videos": final_total,
+                    "completed": final_completed,
+                    "skipped": final_skipped,
+                    "failed": final_failed,
+                    "message": format!("下载完成: {} 个视频, {} 个跳过", final_completed, final_skipped)
+                }),
+            ).await;
+        }
+
+        // 清理
+        self.cancel_tokens.lock().await.remove(&batch_task_id);
+        self.pause_tokens.lock().await.remove(&batch_task_id);
+
+        Ok(())
+    }
+
+    /// 下载单个视频
+    async fn download_single_video(
+        client: reqwest::Client,
+        config: AppConfig,
+        video: VideoInfo,
+        history: Arc<Mutex<HistoryManager>>,
+        cancel_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+        pause_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+        batch_task_id: String,
+        progress_tx: Option<mpsc::Sender<DownloaderEvent>>,
+    ) -> Result<()> {
+        // 收集媒体URL
+        let media_urls = Self::collect_media_items(&video, &config);
+        if media_urls.is_empty() {
+            return Err(anyhow!("No media URLs"));
+        }
+
+        let base_path = PathBuf::from(&config.download_path);
+        let author_dir = base_path.join(sanitize_filename(&video.author.nickname));
+        let filename = generate_filename(&video.desc, &video.aweme_id);
+        let display_name = truncate_chars(&video.desc, 20);
+
+        tokio::fs::create_dir_all(&author_dir).await?;
+
+        let headers = build_download_headers(&config);
+        let mut downloaded_files = Vec::new();
+        let mut total_size = 0u64;
+        let total_files = media_urls.len();
+
+        // 发送开始下载事件
+        emit_event(
+            &progress_tx,
+            "current-video-progress",
+            serde_json::json!({
+                "task_id": batch_task_id,
+                "aweme_id": video.aweme_id,
+                "name": display_name,
+                "progress": 0,
+                "speed_bps": 0
+            }),
+        ).await;
+
+        let start_time = Instant::now();
+
+        for (index, media) in media_urls.iter().enumerate() {
+            // 检查取消
+            if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                for f in &downloaded_files {
+                    let _ = tokio::fs::remove_file(f).await;
+                }
+                return Err(anyhow!("Cancelled"));
+            }
+
+            // 检查暂停
+            loop {
+                let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                if is_cancelled || !is_paused {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+
+            let response = client
+                .get(&media.url)
+                .headers(headers.clone())
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                return Err(anyhow!("HTTP error: {}", response.status()));
+            }
+
+            let content_length = response.content_length().unwrap_or(0);
+            let ext = if media.r#type == "image" { "jpg" } else { "mp4" };
+            let file_name = if total_files == 1 {
+                format!("{}.{}", filename, ext)
+            } else {
+                format!("{}_{:02}.{}", filename, index + 1, ext)
+            };
+            let file_path = author_dir.join(&file_name);
+
+            let mut file = tokio::fs::File::create(&file_path).await?;
+            let mut stream = response.bytes_stream();
+            let mut file_size = 0u64;
+            let mut last_emit = Instant::now();
+
+            while let Some(chunk_result) = stream.next().await {
+                // 检查取消
+                if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                    let _ = tokio::fs::remove_file(&file_path).await;
+                    for f in &downloaded_files {
+                        let _ = tokio::fs::remove_file(f).await;
+                    }
+                    return Err(anyhow!("Cancelled"));
+                }
+
+                // 检查暂停
+                loop {
+                    let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    if is_cancelled || !is_paused {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+
+                let chunk = chunk_result?;
+                file.write_all(&chunk).await?;
+                file_size += chunk.len() as u64;
+                total_size += chunk.len() as u64;
+
+                // 每300ms发送一次进度
+                if last_emit.elapsed().as_millis() >= 300 {
+                    let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+                    let speed_bps = (total_size as f64 / elapsed) as u64;
+                    let progress = if content_length > 0 {
+                        ((file_size as f64 / content_length as f64) * 100.0) as u32
+                    } else {
+                        0
+                    };
+
+                    emit_event(
+                        &progress_tx,
+                        "current-video-progress",
+                        serde_json::json!({
+                            "task_id": batch_task_id,
+                            "aweme_id": video.aweme_id,
+                            "name": display_name,
+                            "progress": progress,
+                            "speed_bps": speed_bps
+                        }),
+                    ).await;
+
+                    last_emit = Instant::now();
+                }
+            }
+
+            downloaded_files.push(file_path);
+        }
+
+        // 发送完成事件
+        let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+        let speed_bps = (total_size as f64 / elapsed) as u64;
+
+        emit_event(
+            &progress_tx,
+            "current-video-progress",
+            serde_json::json!({
+                "task_id": batch_task_id,
+                "aweme_id": video.aweme_id,
+                "name": display_name,
+                "progress": 100,
+                "speed_bps": speed_bps
+            }),
+        ).await;
+
+        // 保存到历史
+        if let Some(first_file) = downloaded_files.first() {
+            let mut history_lock = history.lock().await;
+            let _ = history_lock.add(crate::api::DownloadHistory {
+                aweme_id: video.aweme_id.clone(),
+                title: video.desc.clone(),
+                author: video.author.nickname.clone(),
+                author_id: video.author.uid.clone(),
+                cover: video.video.cover.clone(),
+                file_path: first_file.to_string_lossy().to_string(),
+                media_type: media_type_name(&video.media_type).to_string(),
+                file_size: total_size,
+                create_time: Local::now().timestamp(),
+            });
+        }
+
+        // 写入本地隐藏去重记录
+        let _ = record_downloaded(&author_dir, &video.aweme_id).await;
+
+        Ok(())
+    }
+
+    /// 收集媒体项
+    fn collect_media_items(video: &VideoInfo, config: &AppConfig) -> Vec<DownloadMediaItem> {
+        let mut items = Vec::new();
+
+        // Live Photo
+        if let Some(urls) = &video.live_photo_urls {
+            for url in urls {
+                if !url.trim().is_empty() {
+                    items.push(DownloadMediaItem {
+                        r#type: "live_photo".to_string(),
+                        url: url.clone(),
+                    });
+                }
+            }
+        }
+
+        // 图片
+        if !items.is_empty() {
+            return items;
+        }
+
+        if let Some(urls) = &video.image_urls {
+            for url in urls {
+                if !url.trim().is_empty() {
+                    items.push(DownloadMediaItem {
+                        r#type: "image".to_string(),
+                        url: url.clone(),
+                    });
+                }
+            }
+        }
+
+        if !items.is_empty() {
+            return items;
+        }
+
+        // 视频
+        let quality = DownloadQuality::from_config(&config.download_quality);
+        if let Some(url) = select_video_url(video, quality) {
+            items.push(DownloadMediaItem {
+                r#type: "video".to_string(),
+                url,
+            });
+        } else if let Some(url) = DouyinClient::get_no_watermark_url(video) {
+            items.push(DownloadMediaItem {
+                r#type: "video".to_string(),
+                url,
+            });
+        }
+
+        items
+    }
+
+    /// 批量并发下载视频列表
+    pub async fn start_batch_download(
+        &self,
+        videos: Vec<VideoInfo>,
+        batch_task_id: String,
+        nickname: String,
+    ) -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let total_videos = videos.len();
+        if total_videos == 0 {
+            return Err(anyhow!("No videos to download"));
+        }
+
+        // 初始化取消和暂停标记
+        self.cancel_tokens.lock().await.insert(batch_task_id.clone(), false);
+        self.pause_tokens.lock().await.insert(batch_task_id.clone(), false);
+
+        // 发送批量下载开始事件
+        emit_event(
+            &self.progress_tx,
+            "batch-download-started",
+            serde_json::json!({
+                "task_id": batch_task_id,
+                "nickname": nickname,
+                "total_videos": total_videos,
+                "message": format!("开始并发下载 {} 个视频", total_videos)
+            }),
+        )
+        .await;
+
+        // 并发控制：使用配置的最大并发数
+        let max_concurrent = self.config.max_concurrent.clamp(1, 10);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let completed_count = Arc::new(AtomicUsize::new(0));
+        let skipped_count = Arc::new(AtomicUsize::new(0));
+        let failed_count = Arc::new(AtomicUsize::new(0));
+
+        let mut download_handles = Vec::new();
+
+        for (_index, video) in videos.into_iter().enumerate() {
+            // 检查取消
+            if *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                break;
+            }
+
+            let permit = semaphore.clone().acquire_owned().await.ok();
+            if permit.is_none() {
+                break;
+            }
+            let permit = permit.unwrap();
+
+            // 检查是否已下载（去重）
+            let base_path = PathBuf::from(&self.config.download_path);
+            let author_dir = base_path.join(sanitize_filename(&video.author.nickname));
+            let downloaded = load_downloaded_set(&author_dir).await;
+            if downloaded.contains(&video.aweme_id) {
+                skipped_count.fetch_add(1, AtomicOrdering::SeqCst);
+                let current = completed_count.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+
+                // 发送跳过事件
+                emit_event(
+                    &self.progress_tx,
+                    "download-progress",
+                    serde_json::json!({
+                        "task_id": batch_task_id,
+                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                        "current_downloaded": current,
+                        "total_videos": total_videos,
+                        "message": format!("跳过已下载: {}", video.desc.chars().take(15).collect::<String>())
+                    }),
+                ).await;
+
+                drop(permit);
+                continue;
+            }
+
+            // 克隆必要的数据
+            let client = self.client.clone();
+            let config = self.config.clone();
+            let tasks = self.tasks.clone();
+            let history = self.history.clone();
+            let cancel_tokens = self.cancel_tokens.clone();
+            let pause_tokens = self.pause_tokens.clone();
+            let progress_tx = self.progress_tx.clone();
+            let batch_id = batch_task_id.clone();
+            let completed = completed_count.clone();
+            let failed = failed_count.clone();
+            let aweme_id = video.aweme_id.clone();
+
+            // 收集媒体URL
+            let media_urls = self.collect_download_media_items(&video);
+            if media_urls.is_empty() {
+                drop(permit);
+                continue;
+            }
+
+            let base_path = PathBuf::from(&self.config.download_path);
+            let author_dir = base_path.join(self.sanitize_author_dir(&video.author.nickname));
+            let filename = self.generate_filename_base(&video.desc, &video.aweme_id);
+
+            let task = DownloadTask {
+                id: uuid::Uuid::new_v4().to_string(),
+                aweme_id: video.aweme_id.clone(),
+                url: media_urls.first().map(|item| item.url.clone()).unwrap_or_default(),
+                media_urls: media_urls.clone(),
+                title: video.desc.clone(),
+                author: video.author.nickname.clone(),
+                author_id: video.author.uid.clone(),
+                cover: video.video.cover.clone(),
+                save_path: author_dir.to_string_lossy().to_string(),
+                filename,
+                media_type: video.media_type.clone(),
+                total_files: media_urls.len() as u32,
+                completed_files: 0,
+                status: DownloadStatus::Pending,
+                progress: 0.0,
+                total_size: 0,
+                downloaded_size: 0,
+                error_msg: None,
+                create_time: Local::now().timestamp(),
+                complete_time: None,
+                image_urls: None,
+            };
+
+            let task_id = task.id.clone();
+            let display_name = truncate_chars(&task.title, 8);
+            let display_name_for_log = display_name.clone();
+
+            self.tasks.lock().await.push(task);
+
+            // 启动并发下载任务
+            let handle = tokio::spawn(async move {
+                let result = Self::download_single_with_progress(
+                    client,
+                    config,
+                    tasks,
+                    task_id,
+                    progress_tx.clone(),
+                    history,
+                    cancel_tokens.clone(),
+                    pause_tokens.clone(),
+                    batch_id.clone(),
+                    total_videos,
+                    completed.clone(),
+                    display_name,
+                ).await;
+
+                drop(permit);
+
+                match result {
+                    Ok(_) => {
+                        let current = completed.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                        emit_event(
+                            &progress_tx,
+                            "download-progress",
+                            serde_json::json!({
+                                "task_id": batch_id,
+                                "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                                "current_downloaded": current,
+                                "total_videos": total_videos,
+                                "message": format!("完成 {}/{}: {}", current, total_videos, display_name_for_log)
+                            }),
+                        ).await;
+                    }
+                    Err(e) => {
+                        failed.fetch_add(1, AtomicOrdering::SeqCst);
+                        log::error!("Download error for {}: {}", aweme_id, e);
+                        emit_event(
+                            &progress_tx,
+                            "download-log",
+                            serde_json::json!({
+                                "task_id": batch_id,
+                                "message": format!("下载失败 {}: {}", display_name_for_log, e),
+                                "level": "error"
+                            }),
+                        ).await;
+                    }
+                }
+            });
+
+            download_handles.push(handle);
+        }
+
+        // 等待所有下载完成
+        futures::future::join_all(download_handles).await;
+
+        // 检查是否被取消
+        let was_cancelled = *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+
+        let final_completed = completed_count.load(AtomicOrdering::SeqCst);
+        let final_skipped = skipped_count.load(AtomicOrdering::SeqCst);
+        let final_failed = failed_count.load(AtomicOrdering::SeqCst);
+
+        if was_cancelled {
+            emit_event(
+                &self.progress_tx,
+                "batch-download-cancelled",
+                serde_json::json!({
+                    "task_id": batch_task_id,
+                    "message": format!("下载已取消，已完成 {} 个视频", final_completed)
+                }),
+            ).await;
+        } else {
+            emit_event(
+                &self.progress_tx,
+                "batch-download-completed",
+                serde_json::json!({
+                    "task_id": batch_task_id,
+                    "total_videos": total_videos,
+                    "completed": final_completed,
+                    "skipped": final_skipped,
+                    "failed": final_failed,
+                    "message": format!("下载完成: {} 个视频, {} 个跳过", final_completed, final_skipped)
+                }),
+            ).await;
+        }
+
+        // 清理
+        self.cancel_tokens.lock().await.remove(&batch_task_id);
+        self.pause_tokens.lock().await.remove(&batch_task_id);
+
+        Ok(())
+    }
+
+    /// 单个视频下载（带批量进度）
+    async fn download_single_with_progress(
+        client: reqwest::Client,
+        config: AppConfig,
+        tasks: Arc<Mutex<Vec<DownloadTask>>>,
+        task_id: String,
+        progress_tx: Option<mpsc::Sender<DownloaderEvent>>,
+        history: Arc<Mutex<HistoryManager>>,
+        cancel_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+        pause_tokens: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+        batch_task_id: String,
+        _total_videos: usize,
+        _completed_count: Arc<std::sync::atomic::AtomicUsize>,
+        _display_name: String,
+    ) -> Result<()> {
+        let task = {
+            let tasks_lock = tasks.lock().await;
+            tasks_lock.iter().find(|t| t.id == task_id).cloned()
+                .ok_or_else(|| anyhow!("Task not found"))?
+        };
+
+        let media_count = task.media_urls.len() as u32;
+        if media_count == 0 {
+            return Err(anyhow!("No media URLs"));
+        }
+
+        let save_dir = PathBuf::from(&task.save_path);
+        let headers = build_download_headers(&config);
+
+        tokio::fs::create_dir_all(&save_dir).await?;
+
+        let mut downloaded_files = Vec::new();
+        let mut total_downloaded_size = 0u64;
+        let display_name = truncate_chars(&task.title, 20);
+        let start_time = Instant::now();
+
+        // 发送开始下载事件
+        emit_event(
+            &progress_tx,
+            "current-video-progress",
+            serde_json::json!({
+                "task_id": batch_task_id,
+                "aweme_id": task.aweme_id,
+                "name": display_name,
+                "progress": 0,
+                "speed_bps": 0
+            }),
+        ).await;
+
+        for (index, media) in task.media_urls.iter().enumerate() {
+            // 检查取消
+            if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                for f in &downloaded_files {
+                    let _ = tokio::fs::remove_file(f).await;
+                }
+                return Err(anyhow!("Download cancelled"));
+            }
+
+            // 检查暂停
+            loop {
+                let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                if is_cancelled || !is_paused {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+
+            let response = client
+                .get(&media.url)
+                .headers(headers.clone())
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                return Err(anyhow!("HTTP error: {}", response.status()));
+            }
+
+            let response_size = response.content_length().unwrap_or(0);
+            let file_path = unique_output_path(
+                &save_dir,
+                &task.filename,
+                index,
+                task.media_urls.len(),
+                media.r#type.as_str(),
+            );
+            let mut file = tokio::fs::File::create(&file_path).await?;
+            let mut file_downloaded_size = 0u64;
+            let mut stream = response.bytes_stream();
+            let mut last_emit = Instant::now();
+
+            downloaded_files.push(file_path.clone());
+
+            while let Some(chunk_result) = stream.next().await {
+                // 检查取消
+                if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                    let _ = tokio::fs::remove_file(&file_path).await;
+                    for f in &downloaded_files {
+                        let _ = tokio::fs::remove_file(f).await;
+                    }
+                    return Err(anyhow!("Download cancelled"));
+                }
+
+                // 检查暂停
+                loop {
+                    let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    if is_cancelled || !is_paused {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+
+                let chunk = chunk_result?;
+                file.write_all(&chunk).await?;
+                file_downloaded_size += chunk.len() as u64;
+                total_downloaded_size += chunk.len() as u64;
+
+                // 每300ms发送一次进度
+                if last_emit.elapsed().as_millis() >= 300 {
+                    let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+                    let speed_bps = (total_downloaded_size as f64 / elapsed) as u64;
+                    let progress = if response_size > 0 {
+                        ((file_downloaded_size as f64 / response_size as f64) * 100.0) as u32
+                    } else {
+                        0
+                    };
+
+                    emit_event(
+                        &progress_tx,
+                        "current-video-progress",
+                        serde_json::json!({
+                            "task_id": batch_task_id,
+                            "aweme_id": task.aweme_id,
+                            "name": display_name,
+                            "progress": progress,
+                            "speed_bps": speed_bps
+                        }),
+                    ).await;
+
+                    last_emit = Instant::now();
+                }
+            }
+
+            {
+                let mut tasks_lock = tasks.lock().await;
+                if let Some(current_task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
+                    current_task.completed_files = (index + 1) as u32;
+                    current_task.downloaded_size = total_downloaded_size;
+                }
+            }
+        }
+
+        // 更新任务状态
+        {
+            let mut tasks_lock = tasks.lock().await;
+            if let Some(current_task) = tasks_lock.iter_mut().find(|t| t.id == task_id) {
+                current_task.status = DownloadStatus::Completed;
+                current_task.progress = 100.0;
+                current_task.complete_time = Some(Local::now().timestamp());
+                current_task.completed_files = current_task.total_files;
+            }
+        }
+
+        // 保存到历史
+        if let Some(first_file) = downloaded_files.first() {
+            let mut history_lock = history.lock().await;
+            let _ = history_lock.add(crate::api::DownloadHistory {
+                aweme_id: task.aweme_id.clone(),
+                title: task.title.clone(),
+                author: task.author.clone(),
+                author_id: task.author_id.clone(),
+                cover: task.cover.clone(),
+                file_path: first_file.to_string_lossy().to_string(),
+                media_type: media_type_name(&task.media_type).to_string(),
+                file_size: total_downloaded_size,
+                create_time: Local::now().timestamp(),
+            });
+        }
+
+        // 写入本地隐藏去重记录
+        let _ = record_downloaded(&save_dir, &task.aweme_id).await;
+
+        // 发送完成事件
+        let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+        let speed_bps = (total_downloaded_size as f64 / elapsed) as u64;
+        emit_event(
+            &progress_tx,
+            "current-video-progress",
+            serde_json::json!({
+                "task_id": batch_task_id,
+                "aweme_id": task.aweme_id,
+                "name": display_name,
+                "progress": 100,
+                "speed_bps": speed_bps
+            }),
+        ).await;
+
+        Ok(())
+    }
+}
+
+/// 从作者目录的隐藏文件 `.downloaded` 加载已下载的 aweme_id 集合
+async fn load_downloaded_set(dir: &Path) -> HashSet<String> {
+    let record_path = dir.join(".downloaded");
+    if !record_path.exists() {
+        return HashSet::new();
+    }
+    match tokio::fs::read_to_string(&record_path).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => HashSet::new(),
+    }
+}
+
+/// 将 aweme_id 写入作者目录的隐藏文件 `.downloaded`
+async fn record_downloaded(dir: &Path, aweme_id: &str) -> Result<()> {
+    let record_path = dir.join(".downloaded");
+    let mut set = load_downloaded_set(dir).await;
+    if set.insert(aweme_id.to_string()) {
+        let json = serde_json::to_string(&set)?;
+        tokio::fs::write(&record_path, json).await?;
+    }
+    Ok(())
+}
+
+fn collect_video_candidates(video: &VideoInfo) -> Vec<VideoCandidate> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut push_candidate = |url: Option<String>,
+                              metric: i64,
+                              is_h264: bool,
+                              is_download_addr: bool,
+                              is_lowbr: bool| {
+        let Some(url) = url else {
+            return;
+        };
+        if url.trim().is_empty() || !seen.insert(url.clone()) {
+            return;
+        }
+        candidates.push(VideoCandidate {
+            url,
+            metric,
+            is_h264,
+            is_download_addr,
+            is_lowbr,
+        });
+    };
+
+    push_candidate(
+        video.video.download_addr.clone(),
+        i64::MAX,
+        false,
+        true,
+        false,
+    );
+    push_candidate(
+        video.video.play_addr_h264.clone(),
+        i64::MAX - 1,
+        true,
+        false,
+        false,
+    );
+    push_candidate(video.video.play_addr_lowbr.clone(), 1, true, false, true);
+
+    if let Some(bit_rates) = &video.video.bit_rate {
+        for bit_rate in bit_rates {
+            let metric = if bit_rate.data_size > 0 {
+                bit_rate.data_size
+            } else if bit_rate.bit_rate > 0 {
+                bit_rate.bit_rate
+            } else {
+                0
+            };
+
+            push_candidate(bit_rate.play_addr_h264.clone(), metric, true, false, false);
+            push_candidate(
+                bit_rate.play_addr.clone(),
+                metric,
+                !bit_rate.is_h265,
+                false,
+                false,
+            );
+        }
+    }
+
+    push_candidate(video.video.preview_addr.clone(), 0, false, false, false);
+    push_candidate(Some(video.video.play_addr.clone()), 0, false, false, false);
+
+    candidates
+}
+
+async fn emit_event(
+    sender: &Option<mpsc::Sender<DownloaderEvent>>,
+    name: &'static str,
+    payload: serde_json::Value,
+) {
+    if let Some(tx) = sender {
+        let _ = tx.send(DownloaderEvent { name, payload }).await;
+    }
+}
+
+fn build_download_headers(config: &AppConfig) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity;q=1, *;q=0"));
+    headers.insert(RANGE, HeaderValue::from_static("bytes=0-"));
+    headers.insert(REFERER, HeaderValue::from_static("https://www.douyin.com/"));
+    headers.insert(USER_AGENT, HeaderValue::from_static(get_user_agent()));
+
+    if !config.cookie.trim().is_empty() {
+        if let Ok(cookie) = HeaderValue::from_str(&config.cookie) {
+            headers.insert(COOKIE, cookie);
+        }
+    }
+
+    headers
+}
+
+fn media_type_name(media_type: &MediaType) -> &'static str {
+    match media_type {
+        MediaType::Video => "video",
+        MediaType::Image => "image",
+        MediaType::LivePhoto => "live_photo",
+        MediaType::Mixed => "mixed",
+        MediaType::Audio => "audio",
+    }
+}
+
+fn media_type_display(media_type: &str) -> &'static str {
+    match media_type {
+        "video" => "视频",
+        "image" => "图片",
+        "live_photo" => "Live Photo",
+        "audio" => "音频",
+        _ => "媒体",
+    }
+}
+
+fn media_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "video" | "live_photo" => "mp4",
+        "audio" => "mp3",
+        _ => "jpg",
+    }
+}
+
+fn unique_output_path(
+    save_dir: &Path,
+    base_name: &str,
+    index: usize,
+    total: usize,
+    media_type: &str,
+) -> PathBuf {
+    let stem = if total <= 1 {
+        sanitize_filename(base_name)
+    } else {
+        sanitize_filename(&format!("{}_{:02}", base_name, index + 1))
+    };
+    let extension = media_extension(media_type);
+    let mut path = save_dir.join(format!("{}.{}", stem, extension));
+
+    if path.exists() {
+        let timestamp = Local::now().timestamp();
+        path = save_dir.join(format!("{}_{}.{}", stem, timestamp, extension));
+    }
+
+    path
 }
 
 /// 清理文件名
@@ -365,8 +1875,60 @@ fn sanitize_filename(name: &str) -> String {
     for c in invalid_chars {
         result = result.replace(c, "_");
     }
-    if result.len() > 100 {
-        result = result[..100].to_string();
+    if result.chars().count() > 100 {
+        result = truncate_chars(&result, 100);
     }
     result.trim().to_string()
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+/// 生成文件名
+fn generate_filename(desc: &str, aweme_id: &str) -> String {
+    let title = sanitize_filename(desc);
+    if title.is_empty() {
+        aweme_id.to_string()
+    } else if title.chars().count() > 50 {
+        format!("{}...", truncate_chars(&title, 47))
+    } else {
+        title
+    }
+}
+
+/// 选择视频下载URL
+fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<String> {
+    let candidates = collect_video_candidates(video);
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let selected = match quality {
+        DownloadQuality::Highest => candidates
+            .iter()
+            .find(|c| c.is_download_addr)
+            .or_else(|| candidates.iter().max_by_key(|c| c.metric))
+            .or_else(|| candidates.first()),
+        DownloadQuality::H264 => candidates
+            .iter()
+            .filter(|c| c.is_h264)
+            .max_by_key(|c| c.metric)
+            .or_else(|| candidates.iter().find(|c| c.is_download_addr))
+            .or_else(|| candidates.first()),
+        DownloadQuality::Smallest => candidates
+            .iter()
+            .find(|c| c.is_lowbr)
+            .or_else(|| candidates.iter().filter(|c| c.metric > 0).min_by_key(|c| c.metric))
+            .or_else(|| candidates.first()),
+        DownloadQuality::Auto => candidates
+            .iter()
+            .find(|c| c.is_download_addr)
+            .or_else(|| candidates.iter().find(|c| c.is_h264))
+            .or_else(|| candidates.iter().max_by_key(|c| c.metric))
+            .or_else(|| candidates.first()),
+    };
+
+    selected.map(|c| c.url.clone())
 }

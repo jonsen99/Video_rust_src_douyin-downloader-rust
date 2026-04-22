@@ -13,8 +13,15 @@ pub struct VideoInfo {
     pub video: VideoData,
     pub statistics: Statistics,
     pub status: Status,
+    /// 图片URL列表 (前端期望字段名为 images)
+    #[serde(rename = "images")]
     pub image_urls: Option<Vec<String>>,
     pub is_image: bool,
+    pub media_type: MediaType,
+    pub has_live_photo: bool,
+    /// 实况照片视频URL列表 (前端期望字段名为 live_photos)
+    #[serde(rename = "live_photos")]
+    pub live_photo_urls: Option<Vec<String>>,
     pub music: Option<MusicInfo>,
     pub raw_media_type: Option<i32>,
     pub text_extra: Option<Vec<TextExtra>>,
@@ -43,8 +50,11 @@ pub struct AuthorInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct VideoData {
-    pub play_addr: VideoUrl,
-    pub download_addr: Option<VideoUrl>,
+    pub preview_addr: Option<String>, // 直接存储 URL 字符串
+    pub play_addr: String,            // 直接存储 URL 字符串
+    pub play_addr_h264: Option<String>,
+    pub play_addr_lowbr: Option<String>,
+    pub download_addr: Option<String>,
     pub cover: String,
     pub dynamic_cover: String,
     pub origin_cover: String,
@@ -61,8 +71,13 @@ pub struct VideoData {
 pub struct BitRateInfo {
     pub gear_name: String,
     pub bit_rate: i64,
+    pub quality_type: i32,
+    pub is_h265: bool,
+    pub data_size: i64,
     pub width: i32,
     pub height: i32,
+    pub play_addr: Option<String>,
+    pub play_addr_h264: Option<String>,
 }
 
 /// 视频 URL
@@ -103,7 +118,7 @@ pub struct MusicInfo {
     pub id: String,
     pub title: String,
     pub author: String,
-    pub play_url: Option<VideoUrl>,
+    pub play_url: Option<String>, // 直接存储 URL 字符串
     pub cover_thumb: String,
     pub duration: i64,
 }
@@ -152,9 +167,11 @@ pub struct UserInfo {
     pub nickname: String,
     pub avatar_thumb: String,
     pub avatar_medium: String,
+    pub avatar_larger: String,
     pub signature: String,
     pub follower_count: i64,
     pub following_count: i64,
+    pub total_favorited: i64,
     pub aweme_count: i64,
     pub favoriting_count: i64,
     pub is_follow: bool,
@@ -175,12 +192,55 @@ pub struct UserDetail {
     pub friend_status: i32,
 }
 
+/// Python 版本 `/api/get_liked_videos` 的媒体项结构
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LikedVideoMediaUrl {
+    pub r#type: String,
+    pub url: String,
+}
+
+/// 下载媒体项
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DownloadMediaItem {
+    pub r#type: String,
+    pub url: String,
+}
+
+/// Python 版本 `/api/get_liked_videos` 的作者结构
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LikedVideoAuthor {
+    pub nickname: String,
+    pub sec_uid: String,
+    pub avatar_thumb: String,
+}
+
+/// Python 版本 `/api/get_liked_videos` 的单项视频结构
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LikedVideoItem {
+    pub aweme_id: String,
+    pub desc: String,
+    pub create_time: i64,
+    pub digg_count: i64,
+    pub comment_count: i64,
+    pub share_count: i64,
+    pub cover_url: String,
+    pub media_type: String,
+    pub media_urls: Vec<LikedVideoMediaUrl>,
+    pub bgm_url: Option<String>,
+    pub author: LikedVideoAuthor,
+}
+
 /// 下载任务
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
     pub id: String,
     pub aweme_id: String,
     pub url: String,
+    pub media_urls: Vec<DownloadMediaItem>,
     pub title: String,
     pub author: String,
     pub author_id: String,
@@ -188,6 +248,8 @@ pub struct DownloadTask {
     pub save_path: String,
     pub filename: String,
     pub media_type: MediaType,
+    pub total_files: u32,
+    pub completed_files: u32,
     pub status: DownloadStatus,
     pub progress: f32,
     pub total_size: u64,
@@ -260,6 +322,14 @@ pub struct SearchResult<T> {
     pub has_more: bool,
     pub cursor: i64,
     pub total: i64,
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchUserResult {
+    NeedVerify { verify_url: String },
+    NotFound,
+    Single(UserInfo),
+    Multiple(Vec<UserInfo>),
 }
 
 /// 推荐视频响应
@@ -357,14 +427,26 @@ pub struct GenericResponse {
 
 impl GenericResponse {
     pub fn ok(msg: &str) -> Self {
-        Self { success: true, message: msg.to_string(), data: None }
+        Self {
+            success: true,
+            message: msg.to_string(),
+            data: None,
+        }
     }
 
     pub fn error(msg: &str) -> Self {
-        Self { success: false, message: msg.to_string(), data: None }
+        Self {
+            success: false,
+            message: msg.to_string(),
+            data: None,
+        }
     }
 
     pub fn with_data(msg: &str, data: serde_json::Value) -> Self {
-        Self { success: true, message: msg.to_string(), data: Some(data) }
+        Self {
+            success: true,
+            message: msg.to_string(),
+            data: Some(data),
+        }
     }
 }

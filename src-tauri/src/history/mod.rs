@@ -57,7 +57,11 @@ impl HistoryManager {
     /// 添加历史记录
     pub fn add(&mut self, record: DownloadHistory) -> Result<()> {
         // 检查是否已存在
-        if let Some(pos) = self.history.iter().position(|h| h.aweme_id == record.aweme_id) {
+        if let Some(pos) = self
+            .history
+            .iter()
+            .position(|h| h.aweme_id == record.aweme_id)
+        {
             self.history.remove(pos);
         }
 

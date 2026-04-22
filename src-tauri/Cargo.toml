@@ -1,6 +1,6 @@
 [package]
 name = "douyin-downloader"
-version = "0.1.0"
+version = "0.0.1"
 description = "抖音视频下载器"
 authors = ["you"]
 license = ""
@@ -53,6 +53,7 @@ scraper = "0.19"
 
 # 异步通道
 futures = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
 
 # UUID
 uuid = { version = "1", features = ["v4"] }

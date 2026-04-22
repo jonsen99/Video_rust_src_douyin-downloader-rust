@@ -83,7 +83,10 @@ impl DouyinClient {
     fn build_common_headers(cookie: &str) -> HashMap<String, String> {
         let mut headers = HashMap::new();
         headers.insert("User-Agent".to_string(), get_user_agent().to_string());
-        headers.insert("Accept".to_string(), "application/json, text/plain, */*".to_string());
+        headers.insert(
+            "Accept".to_string(),
+            "application/json, text/plain, */*".to_string(),
+        );
         headers.insert(
             "Accept-Language".to_string(),
             "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string(),
@@ -97,7 +100,8 @@ impl DouyinClient {
         headers.insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
         headers.insert(
             "sec-ch-ua".to_string(),
-            "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\"".to_string(),
+            "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\""
+                .to_string(),
         );
         if !cookie.is_empty() {
             headers.insert("Cookie".to_string(), cookie.to_string());
@@ -214,31 +218,45 @@ impl DouyinClient {
             .or_insert_with(Self::generate_ms_token);
         params.insert(
             "screen_width".to_string(),
-            cookie_dict
-                .get("dy_swidth")
-                .cloned()
-                .unwrap_or_else(|| params.get("screen_width").cloned().unwrap_or_else(|| "1680".to_string())),
+            cookie_dict.get("dy_swidth").cloned().unwrap_or_else(|| {
+                params
+                    .get("screen_width")
+                    .cloned()
+                    .unwrap_or_else(|| "1680".to_string())
+            }),
         );
         params.insert(
             "screen_height".to_string(),
-            cookie_dict
-                .get("dy_sheight")
-                .cloned()
-                .unwrap_or_else(|| params.get("screen_height").cloned().unwrap_or_else(|| "1050".to_string())),
+            cookie_dict.get("dy_sheight").cloned().unwrap_or_else(|| {
+                params
+                    .get("screen_height")
+                    .cloned()
+                    .unwrap_or_else(|| "1050".to_string())
+            }),
         );
         params.insert(
             "cpu_core_num".to_string(),
             cookie_dict
                 .get("device_web_cpu_core")
                 .cloned()
-                .unwrap_or_else(|| params.get("cpu_core_num").cloned().unwrap_or_else(|| "8".to_string())),
+                .unwrap_or_else(|| {
+                    params
+                        .get("cpu_core_num")
+                        .cloned()
+                        .unwrap_or_else(|| "8".to_string())
+                }),
         );
         params.insert(
             "device_memory".to_string(),
             cookie_dict
                 .get("device_web_memory_size")
                 .cloned()
-                .unwrap_or_else(|| params.get("device_memory").cloned().unwrap_or_else(|| "8".to_string())),
+                .unwrap_or_else(|| {
+                    params
+                        .get("device_memory")
+                        .cloned()
+                        .unwrap_or_else(|| "8".to_string())
+                }),
         );
 
         let verify_fp = cookie_dict
@@ -303,6 +321,24 @@ impl DouyinClient {
             skip_sign
         );
 
+        // 打印关键参数用于调试
+        let params_str: String = all_params
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}={}",
+                    k,
+                    if k.len() > 20 {
+                        &v[..20.min(v.len())]
+                    } else {
+                        v
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::debug!("Request params: {}", params_str);
+
         let mut req = match method {
             "GET" => self.client.get(url).query(&all_params),
             "POST" => self.client.post(url).form(&all_params),
@@ -361,7 +397,8 @@ impl DouyinClient {
         params: Option<HashMap<&str, String>>,
         method: &str,
     ) -> Result<ApiResponse<T>> {
-        self.request_with_options(url, params, method, None, false).await
+        self.request_with_options(url, params, method, None, false)
+            .await
     }
 
     pub async fn request_raw_json(
@@ -370,7 +407,8 @@ impl DouyinClient {
         params: Option<HashMap<&str, String>>,
         method: &str,
     ) -> Result<serde_json::Value> {
-        self.request_with_options(url, params, method, None, false).await
+        self.request_with_options(url, params, method, None, false)
+            .await
     }
 
     pub async fn request_raw_json_with_options(
@@ -381,7 +419,8 @@ impl DouyinClient {
         extra_headers: Option<HashMap<String, String>>,
         skip_sign: bool,
     ) -> Result<serde_json::Value> {
-        self.request_with_options(url, params, method, extra_headers, skip_sign).await
+        self.request_with_options(url, params, method, extra_headers, skip_sign)
+            .await
     }
 
     /// 从 URL 提取视频 ID
@@ -473,25 +512,51 @@ impl DouyinClient {
         let author_data = &data["author"];
         let author = AuthorInfo {
             uid: author_data["uid"].as_str().unwrap_or_default().to_string(),
-            sec_uid: author_data["sec_uid"].as_str().unwrap_or_default().to_string(),
-            nickname: author_data["nickname"].as_str().unwrap_or_default().to_string(),
+            sec_uid: author_data["sec_uid"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            nickname: author_data["nickname"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             avatar_thumb: self.get_first_url(&author_data["avatar_thumb"]["url_list"]),
             avatar_medium: self.get_first_url(&author_data["avatar_medium"]["url_list"]),
-            signature: author_data["signature"].as_str().unwrap_or_default().to_string(),
+            signature: author_data["signature"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             follower_count: author_data["follower_count"].as_i64().unwrap_or(0),
             following_count: author_data["following_count"].as_i64().unwrap_or(0),
             aweme_count: author_data["aweme_count"].as_i64().unwrap_or(0),
             favoriting_count: author_data["favoriting_count"].as_i64().unwrap_or(0),
             is_follow: author_data["is_follow"].as_bool().unwrap_or(false),
             verify_status: author_data["verify_status"].as_i64().unwrap_or(0) as i32,
-            unique_id: author_data["unique_id"].as_str().unwrap_or_default().to_string(),
+            unique_id: author_data["unique_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
         };
 
-        // 视频数据
+        // 视频数据 - 参考 Python 版本从 bit_rate[0]["play_addr"] 获取视频 URL
         let video_data = &data["video"];
+
+        // 优先从 bit_rate[0]["play_addr"] 获取视频 URL（参考 Python 版本）
+        let play_addr = video_data["bit_rate"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|br| br["play_addr"]["url_list"].as_array())
+            .and_then(|urls| urls.first())
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.get_first_url(&video_data["play_addr"]["url_list"]));
+
         let video = VideoData {
-            play_addr: self.parse_video_url(&video_data["play_addr"]),
-            download_addr: Some(self.parse_video_url(&video_data["download_addr"])),
+            preview_addr: Some(play_addr.clone()),
+            play_addr: play_addr.clone(),
+            play_addr_h264: self.get_first_url_opt(&video_data["play_addr_h264"]["url_list"]),
+            play_addr_lowbr: self.get_first_url_opt(&video_data["play_addr_lowbr"]["url_list"]),
+            download_addr: self.get_first_url_opt(&video_data["download_addr"]["url_list"]),
             cover: self.get_first_url(&video_data["cover"]["url_list"]),
             dynamic_cover: self.get_first_url(&video_data["dynamic_cover"]["url_list"]),
             origin_cover: self.get_first_url(&video_data["origin_cover"]["url_list"]),
@@ -500,12 +565,19 @@ impl DouyinClient {
             duration: video_data["duration"].as_i64().unwrap_or(0),
             ratio: video_data["ratio"].as_str().unwrap_or_default().to_string(),
             bit_rate: video_data["bit_rate"].as_array().map(|arr| {
-                arr.iter().map(|b| BitRateInfo {
-                    gear_name: b["gear_name"].as_str().unwrap_or_default().to_string(),
-                    bit_rate: b["bit_rate"].as_i64().unwrap_or(0),
-                    width: b["width"].as_i64().unwrap_or(0) as i32,
-                    height: b["height"].as_i64().unwrap_or(0) as i32,
-                }).collect()
+                arr.iter()
+                    .map(|b| BitRateInfo {
+                        gear_name: b["gear_name"].as_str().unwrap_or_default().to_string(),
+                        bit_rate: b["bit_rate"].as_i64().unwrap_or(0),
+                        quality_type: b["quality_type"].as_i64().unwrap_or(0) as i32,
+                        is_h265: b["is_h265"].as_bool().unwrap_or(false),
+                        data_size: b["data_size"].as_i64().unwrap_or(0),
+                        width: b["width"].as_i64().unwrap_or(0) as i32,
+                        height: b["height"].as_i64().unwrap_or(0) as i32,
+                        play_addr: self.get_first_url_opt(&b["play_addr"]["url_list"]),
+                        play_addr_h264: self.get_first_url_opt(&b["play_addr_h264"]["url_list"]),
+                    })
+                    .collect()
             }),
         };
 
@@ -530,17 +602,73 @@ impl DouyinClient {
             is_prohibited: status_data["is_prohibited"].as_bool().unwrap_or(false),
         };
 
-        // 图片列表 (图集)
-        let is_image = data["images"].as_array().map_or(false, |arr| !arr.is_empty());
-        let image_urls = if is_image {
-            data["images"].as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|img| self.get_first_url_opt(&img["url_list"]))
-                    .collect()
-            })
-        } else {
+        // 判断媒体类型 - 参考 Python 版本
+        // Python: 如果 images 字段存在且不为 null，就是图集(awemeType=1)
+        // 否则是视频(awemeType=0)
+        let images_data = data
+            .get("images")
+            .and_then(|v| v.as_array())
+            .filter(|arr| !arr.is_empty());
+
+        let is_image = images_data.is_some();
+        let mut image_urls_list = Vec::new();
+        let mut live_photo_urls_list = Vec::new();
+
+        if let Some(images) = images_data {
+            for image in images {
+                if let Some(url) = image
+                    .get("video")
+                    .and_then(|value| value.get("play_addr"))
+                    .and_then(|value| value.get("url_list"))
+                    .and_then(|value| value.as_array())
+                    .and_then(|urls| urls.first())
+                    .and_then(|value| value.as_str())
+                {
+                    live_photo_urls_list.push(url.to_string());
+                } else if let Some(url) = image
+                    .get("url_list")
+                    .and_then(|value| value.as_array())
+                    .and_then(|urls| urls.last())
+                    .and_then(|value| value.as_str())
+                {
+                    image_urls_list.push(url.to_string());
+                }
+            }
+        }
+
+        let has_live_photo = !live_photo_urls_list.is_empty();
+        let has_static_image = !image_urls_list.is_empty();
+        let image_urls = if image_urls_list.is_empty() {
             None
+        } else {
+            Some(image_urls_list)
         };
+        let live_photo_urls = if live_photo_urls_list.is_empty() {
+            None
+        } else {
+            Some(live_photo_urls_list)
+        };
+
+        // 确定媒体类型
+        // 参考 Python 版本: awemeType=0 视频, awemeType=1 图集
+        // 实况照片是图集的特殊形式，有视频URL
+        let media_type = if has_live_photo && has_static_image {
+            MediaType::Mixed
+        } else if has_live_photo {
+            MediaType::LivePhoto
+        } else if is_image {
+            MediaType::Image
+        } else {
+            MediaType::Video
+        };
+
+        log::info!(
+            "parse_video_info: aweme_id={} is_image={} has_live_photo={} media_type={:?}",
+            aweme_id,
+            is_image,
+            has_live_photo,
+            media_type
+        );
 
         // 音乐信息
         let music = if data["music"].is_object() {
@@ -548,9 +676,16 @@ impl DouyinClient {
             Some(MusicInfo {
                 id: m["id"].as_str().unwrap_or_default().to_string(),
                 title: m["title"].as_str().unwrap_or_default().to_string(),
-                author: m["author"].as_str().unwrap_or_default().to_string(),
-                play_url: Some(self.parse_video_url(&m["play_url"])),
-                cover_thumb: self.get_first_url(&m["cover_thumb"]["url_list"]),
+                author: m["author"]
+                    .as_str()
+                    .or_else(|| m["owner_nickname"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                play_url: self.extract_music_play_url_value(m),
+                cover_thumb: self
+                    .get_first_url_opt(&m["cover_thumb"]["url_list"])
+                    .or_else(|| self.get_first_url_opt(&m["cover_large"]["url_list"]))
+                    .unwrap_or_default(),
                 duration: m["duration"].as_i64().unwrap_or(0),
             })
         } else {
@@ -559,14 +694,16 @@ impl DouyinClient {
 
         // 文本额外信息
         let text_extra = data["text_extra"].as_array().map(|arr| {
-            arr.iter().map(|t| TextExtra {
-                text: t["text"].as_str().unwrap_or_default().to_string(),
-                r#type: t["type"].as_i64().unwrap_or(0) as i32,
-                hashtag_name: t["hashtag_name"].as_str().map(|s| s.to_string()),
-                aweme_id: t["aweme_id"].as_str().map(|s| s.to_string()),
-                sec_uid: t["sec_uid"].as_str().map(|s| s.to_string()),
-                user_id: t["user_id"].as_str().map(|s| s.to_string()),
-            }).collect()
+            arr.iter()
+                .map(|t| TextExtra {
+                    text: t["text"].as_str().unwrap_or_default().to_string(),
+                    r#type: t["type"].as_i64().unwrap_or(0) as i32,
+                    hashtag_name: t["hashtag_name"].as_str().map(|s| s.to_string()),
+                    aweme_id: t["aweme_id"].as_str().map(|s| s.to_string()),
+                    sec_uid: t["sec_uid"].as_str().map(|s| s.to_string()),
+                    user_id: t["user_id"].as_str().map(|s| s.to_string()),
+                })
+                .collect()
         });
 
         // 判断媒体类型
@@ -582,19 +719,13 @@ impl DouyinClient {
             status,
             image_urls,
             is_image,
+            media_type,
+            has_live_photo,
+            live_photo_urls,
             music,
             raw_media_type,
             text_extra,
         })
-    }
-
-    fn parse_video_url(&self, data: &serde_json::Value) -> VideoUrl {
-        VideoUrl {
-            url_list: data["url_list"].as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default(),
-            uri: data["uri"].as_str().unwrap_or_default().to_string(),
-        }
     }
 
     fn get_first_url(&self, data: &serde_json::Value) -> String {
@@ -612,18 +743,282 @@ impl DouyinClient {
             .map(|s| s.to_string())
     }
 
+    fn get_last_url_opt(&self, data: &serde_json::Value) -> Option<String> {
+        data.as_array()
+            .and_then(|arr| arr.last())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    fn extract_music_play_url_value(&self, music: &serde_json::Value) -> Option<String> {
+        if let Some(play_url) = music.get("play_url") {
+            if play_url.is_object() {
+                if let Some(url) = self.get_first_url_opt(&play_url["url_list"]) {
+                    if !url.is_empty() {
+                        return Some(url);
+                    }
+                }
+                if let Some(uri) = play_url.get("uri").and_then(|value| value.as_str()) {
+                    if uri.starts_with("http") {
+                        return Some(uri.to_string());
+                    }
+                }
+            } else if let Some(url) = play_url.as_str() {
+                if url.starts_with("http") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+
+        if let Some(music_file) = music.get("music_file") {
+            if music_file.is_object() {
+                if let Some(url) = self.get_first_url_opt(&music_file["url_list"]) {
+                    if !url.is_empty() {
+                        return Some(url);
+                    }
+                }
+            } else if let Some(url) = music_file.as_str() {
+                if url.starts_with("http") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+
+        for key in ["src_url", "mp3_url"] {
+            if let Some(url) = music.get(key).and_then(|value| value.as_str()) {
+                if url.starts_with("http") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn extract_liked_media_info(
+        &self,
+        post: &serde_json::Value,
+    ) -> (String, Vec<LikedVideoMediaUrl>) {
+        let mut urls = Vec::new();
+        let mut media_type = "unknown".to_string();
+
+        if let Some(images) = post.get("images").and_then(|value| value.as_array()) {
+            let mut has_live = false;
+            let mut has_image = false;
+
+            for image in images {
+                if let Some(video_urls) = image
+                    .get("video")
+                    .and_then(|value| value.get("play_addr"))
+                    .and_then(|value| value.get("url_list"))
+                    .and_then(|value| value.as_array())
+                {
+                    has_live = true;
+                    if let Some(url) = video_urls.first().and_then(|value| value.as_str()) {
+                        urls.push(LikedVideoMediaUrl {
+                            r#type: "live_photo".to_string(),
+                            url: url.to_string(),
+                        });
+                    }
+                } else if let Some(image_urls) =
+                    image.get("url_list").and_then(|value| value.as_array())
+                {
+                    if let Some(url) = image_urls.last().and_then(|value| value.as_str()) {
+                        has_image = true;
+                        urls.push(LikedVideoMediaUrl {
+                            r#type: "image".to_string(),
+                            url: url.to_string(),
+                        });
+                    }
+                }
+            }
+
+            media_type = if has_live && has_image {
+                "mixed".to_string()
+            } else if has_live {
+                "live_photo".to_string()
+            } else if has_image {
+                "image".to_string()
+            } else {
+                "unknown".to_string()
+            };
+        } else if let Some(video_urls) = post
+            .get("video")
+            .and_then(|value| value.get("play_addr"))
+            .and_then(|value| value.get("url_list"))
+            .and_then(|value| value.as_array())
+        {
+            if let Some(url) = video_urls.first().and_then(|value| value.as_str()) {
+                media_type = "video".to_string();
+                urls.push(LikedVideoMediaUrl {
+                    r#type: "video".to_string(),
+                    url: url.to_string(),
+                });
+            }
+        }
+
+        (media_type, urls)
+    }
+
+    fn extract_liked_bgm_url(&self, post: &serde_json::Value) -> Option<String> {
+        let music = post.get("music")?;
+        let mut bgm_url = self.extract_music_play_url_value(music);
+
+        if bgm_url
+            .as_ref()
+            .map(|value| value.is_empty())
+            .unwrap_or(true)
+        {
+            let h5_url = music
+                .get("h5_url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let web_url = music
+                .get("web_url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            bgm_url = Some(if !h5_url.is_empty() {
+                h5_url.to_string()
+            } else {
+                web_url.to_string()
+            });
+        }
+
+        if bgm_url
+            .as_ref()
+            .map(|value| value.is_empty())
+            .unwrap_or(true)
+        {
+            if let Some(music_file) = music.get("music_file") {
+                if music_file.is_object() {
+                    bgm_url = self.get_first_url_opt(&music_file["url_list"]);
+                } else if let Some(url) = music_file.as_str() {
+                    bgm_url = Some(url.to_string());
+                }
+            }
+        }
+
+        bgm_url
+    }
+
+    fn build_liked_video_item(&self, post: &serde_json::Value) -> Option<LikedVideoItem> {
+        let aweme_id = post.get("aweme_id")?.as_str()?.to_string();
+        let (media_type, media_urls) = self.extract_liked_media_info(post);
+
+        let cover_url = post
+            .get("video")
+            .and_then(|value| value.get("cover"))
+            .and_then(|value| value.get("url_list"))
+            .and_then(|value| self.get_first_url_opt(value))
+            .or_else(|| {
+                post.get("images")
+                    .and_then(|value| value.as_array())
+                    .and_then(|images| images.first())
+                    .and_then(|image| image.get("url_list"))
+                    .and_then(|value| self.get_last_url_opt(value))
+            })
+            .unwrap_or_default();
+
+        Some(LikedVideoItem {
+            aweme_id,
+            desc: post["desc"].as_str().unwrap_or_default().to_string(),
+            create_time: post["create_time"].as_i64().unwrap_or(0),
+            digg_count: post["statistics"]["digg_count"].as_i64().unwrap_or(0),
+            comment_count: post["statistics"]["comment_count"].as_i64().unwrap_or(0),
+            share_count: post["statistics"]["share_count"].as_i64().unwrap_or(0),
+            cover_url,
+            media_type,
+            media_urls,
+            bgm_url: self.extract_liked_bgm_url(post),
+            author: LikedVideoAuthor {
+                nickname: post["author"]["nickname"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                sec_uid: post["author"]["sec_uid"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                avatar_thumb: post
+                    .get("author")
+                    .and_then(|value| value.get("avatar_thumb"))
+                    .and_then(|value| value.get("url_list"))
+                    .and_then(|value| self.get_first_url_opt(value))
+                    .unwrap_or_default(),
+            },
+        })
+    }
+
+    async fn request_liked_videos_response(
+        &self,
+        sec_uid: &str,
+        max_cursor: i64,
+        count: u32,
+    ) -> Result<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("max_cursor", max_cursor.to_string());
+        params.insert("count", count.to_string());
+        if !sec_uid.is_empty() {
+            params.insert("sec_user_id", sec_uid.to_string());
+        }
+
+        let mut headers = HashMap::new();
+        headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+
+        let response = self
+            .request_raw_json_with_options(
+                "https://www.douyin.com/aweme/v1/web/aweme/favorite/",
+                Some(params),
+                "GET",
+                Some(headers),
+                true,
+            )
+            .await?;
+
+        let status_code = response["status_code"].as_i64().unwrap_or(0);
+        if status_code != 0 {
+            let status_msg = response["status_msg"].as_str().unwrap_or("unknown error");
+            return Err(anyhow!("API error: {}", status_msg));
+        }
+
+        Ok(response)
+    }
+
+    pub async fn get_liked_videos_python_style(
+        &self,
+        sec_uid: &str,
+        max_cursor: i64,
+        count: u32,
+    ) -> Result<Vec<LikedVideoItem>> {
+        let response = self
+            .request_liked_videos_response(sec_uid, max_cursor, count)
+            .await?;
+
+        Ok(response["aweme_list"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|post| self.build_liked_video_item(post))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// 获取无水印视频 URL
     pub fn get_no_watermark_url(video: &VideoInfo) -> Option<String> {
         // 优先使用 download_addr
         if let Some(download_addr) = &video.video.download_addr {
-            if let Some(url) = download_addr.url_list.first() {
-                return Some(url.clone());
+            if !download_addr.is_empty() {
+                return Some(download_addr.clone());
             }
         }
 
         // 使用 play_addr 并替换水印参数
-        if let Some(url) = video.video.play_addr.url_list.first() {
-            let clean_url = url
+        if !video.video.play_addr.is_empty() {
+            let clean_url = video
+                .video
+                .play_addr
                 .replace("watermark=1", "watermark=0")
                 .replace("&watermark=", "")
                 .replace("playwm", "play");
@@ -633,7 +1028,31 @@ impl DouyinClient {
     }
 
     /// 搜索用户
-    pub async fn search_user(&self, keyword: &str) -> Result<Vec<UserInfo>> {
+    pub async fn search_user(&self, keyword: &str) -> Result<SearchUserResult> {
+        let keyword = keyword.trim();
+
+        if keyword.contains("https") {
+            let user_id = keyword
+                .split('/')
+                .next_back()
+                .unwrap_or_default()
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+
+            if user_id.is_empty() {
+                return Ok(SearchUserResult::NotFound);
+            }
+
+            return Ok(SearchUserResult::Single(UserInfo {
+                sec_uid: user_id,
+                ..Default::default()
+            }));
+        }
+
+        let precise_search = keyword.starts_with('@') || keyword.chars().any(|ch| ch.is_ascii_digit());
         let mut params = HashMap::new();
         params.insert("keyword", keyword.to_string());
         params.insert("search_channel", "aweme_user_web".to_string());
@@ -642,19 +1061,25 @@ impl DouyinClient {
         params.insert("is_filter_search", "0".to_string());
         params.insert("from_group_id", "".to_string());
         params.insert("offset", "0".to_string());
-        params.insert("count", "10".to_string());
+        params.insert(
+            "count",
+            if precise_search { "1" } else { "10" }.to_string(),
+        );
         params.insert(
             "pc_search_top_1_params",
             "{\"enable_ai_search_top_1\":1}".to_string(),
         );
 
+        let encoded_keyword: String =
+            url::form_urlencoded::byte_serialize(keyword.as_bytes()).collect();
+        let verify_url = format!(
+            "https://www.douyin.com/jingxuan/search/{}?type=user",
+            encoded_keyword
+        );
         let mut headers = HashMap::new();
         headers.insert(
             "Referer".to_string(),
-            format!(
-                "https://www.douyin.com/jingxuan/search/{}?type=user",
-                keyword
-            ),
+            verify_url.clone(),
         );
 
         let response = self
@@ -667,13 +1092,25 @@ impl DouyinClient {
             )
             .await?;
 
+        let need_verify = response["search_nil_info"]["search_nil_type"]
+            .as_str()
+            .map(|value| value == "verify_check")
+            .unwrap_or(false)
+            && response["user_list"]
+                .as_array()
+                .map(|items| items.is_empty())
+                .unwrap_or(true);
+        if need_verify {
+            return Ok(SearchUserResult::NeedVerify { verify_url });
+        }
+
         let status_code = response["status_code"].as_i64().unwrap_or(-1);
         if status_code != 0 {
             let status_msg = response["status_msg"].as_str().unwrap_or("unknown error");
             return Err(anyhow!("API error: {}", status_msg));
         }
 
-        let users = response["user_list"]
+        let users: Vec<UserInfo> = response["user_list"]
             .as_array()
             .map(|arr| {
                 arr.iter()
@@ -688,9 +1125,11 @@ impl DouyinClient {
                             nickname: user["nickname"].as_str()?.to_string(),
                             avatar_thumb: self.get_first_url(&user["avatar_thumb"]["url_list"]),
                             avatar_medium: self.get_first_url(&user["avatar_medium"]["url_list"]),
+                            avatar_larger: self.get_first_url(&user["avatar_larger"]["url_list"]),
                             signature: user["signature"].as_str().unwrap_or_default().to_string(),
                             follower_count: user["follower_count"].as_i64().unwrap_or(0),
                             following_count: user["following_count"].as_i64().unwrap_or(0),
+                            total_favorited: user["total_favorited"].as_i64().unwrap_or(0),
                             aweme_count: user["aweme_count"].as_i64().unwrap_or(0),
                             favoriting_count: user["favoriting_count"].as_i64().unwrap_or(0),
                             is_follow: user["is_follow"].as_bool().unwrap_or(false),
@@ -703,7 +1142,17 @@ impl DouyinClient {
             })
             .unwrap_or_default();
 
-        Ok(users)
+        if users.is_empty() {
+            return Ok(SearchUserResult::NotFound);
+        }
+
+        if precise_search {
+            Ok(SearchUserResult::Single(
+                users.into_iter().next().unwrap_or_default(),
+            ))
+        } else {
+            Ok(SearchUserResult::Multiple(users))
+        }
     }
 
     /// 获取用户详情
@@ -736,17 +1185,31 @@ impl DouyinClient {
 
         let info = UserInfo {
             uid: user_data["uid"].as_str().unwrap_or_default().to_string(),
-            nickname: user_data["nickname"].as_str().unwrap_or_default().to_string(),
+            nickname: user_data["nickname"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             avatar_thumb: self.get_first_url(&user_data["avatar_thumb"]["url_list"]),
             avatar_medium: self.get_first_url(&user_data["avatar_medium"]["url_list"]),
-            signature: user_data["signature"].as_str().unwrap_or_default().to_string(),
+            avatar_larger: self.get_first_url(&user_data["avatar_larger"]["url_list"]),
+            signature: user_data["signature"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             follower_count: user_data["follower_count"].as_i64().unwrap_or(0),
             following_count: user_data["following_count"].as_i64().unwrap_or(0),
+            total_favorited: user_data["total_favorited"].as_i64().unwrap_or(0),
             aweme_count: user_data["aweme_count"].as_i64().unwrap_or(0),
             favoriting_count: user_data["favoriting_count"].as_i64().unwrap_or(0),
             is_follow: user_data["is_follow"].as_bool().unwrap_or(false),
-            sec_uid: user_data["sec_uid"].as_str().unwrap_or_default().to_string(),
-            unique_id: user_data["unique_id"].as_str().unwrap_or_default().to_string(),
+            sec_uid: user_data["sec_uid"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            unique_id: user_data["unique_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             verify_status: user_data["verify_status"].as_i64().unwrap_or(0) as i32,
         };
 
@@ -816,31 +1279,9 @@ impl DouyinClient {
         max_cursor: i64,
         count: u32,
     ) -> Result<(Vec<VideoInfo>, i64, bool)> {
-        let mut params = HashMap::new();
-        params.insert("max_cursor", max_cursor.to_string());
-        params.insert("count", count.to_string());
-        if !sec_uid.is_empty() {
-            params.insert("sec_user_id", sec_uid.to_string());
-        }
-
-        let mut headers = HashMap::new();
-        headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
-
         let response = self
-            .request_raw_json_with_options(
-                "https://www.douyin.com/aweme/v1/web/aweme/favorite/",
-                Some(params),
-                "GET",
-                Some(headers),
-                true,
-            )
+            .request_liked_videos_response(sec_uid, max_cursor, count)
             .await?;
-
-        let status_code = response["status_code"].as_i64().unwrap_or(0);
-        if status_code != 0 {
-            let status_msg = response["status_msg"].as_str().unwrap_or("unknown error");
-            return Err(anyhow!("API error: {}", status_msg));
-        }
 
         let aweme_list = response["aweme_list"].as_array();
         let has_more = response["has_more"].as_i64().unwrap_or(0) == 1
@@ -901,7 +1342,7 @@ impl DouyinClient {
                 Some(params),
                 "POST",
                 Some(headers),
-                true,
+                false, // 需要签名
             )
             .await?;
 
@@ -912,7 +1353,11 @@ impl DouyinClient {
         }
 
         let aweme_list = response["aweme_list"].as_array();
-        let has_more = response["has_more"].as_bool().unwrap_or(false);
+        // has_more 可能是布尔值或整数
+        let has_more = response["has_more"]
+            .as_bool()
+            .or_else(|| response["has_more"].as_i64().map(|v| v == 1))
+            .unwrap_or(false);
         let next_cursor = response["cursor"]
             .as_i64()
             .or_else(|| response["max_cursor"].as_i64())
@@ -954,7 +1399,9 @@ impl DouyinClient {
             return Err(anyhow!("API error: {:?}", response.status_msg));
         }
 
-        let data = response.data.ok_or_else(|| anyhow!("No data in response"))?;
+        let data = response
+            .data
+            .ok_or_else(|| anyhow!("No data in response"))?;
         let comments_data = data["comments"].as_array();
         let has_more = data["has_more"].as_bool().unwrap_or(false);
         let cursor = data["cursor"].as_i64().unwrap_or(0);
@@ -990,7 +1437,8 @@ impl DouyinClient {
     /// 解析分享链接
     pub async fn parse_share_link(&self, url: &str) -> Result<VideoInfo> {
         // 先请求获取重定向后的 URL
-        let response = self.client
+        let response = self
+            .client
             .get(url)
             .header("User-Agent", get_user_agent())
             .send()
@@ -1054,9 +1502,11 @@ impl DouyinClient {
             nickname: data["nickname"].as_str().unwrap_or_default().to_string(),
             avatar_thumb: self.get_first_url(&data["avatar_thumb"]["url_list"]),
             avatar_medium: self.get_first_url(&data["avatar_medium"]["url_list"]),
+            avatar_larger: self.get_first_url(&data["avatar_larger"]["url_list"]),
             signature: data["signature"].as_str().unwrap_or_default().to_string(),
             follower_count: data["follower_count"].as_i64().unwrap_or(0),
             following_count: data["following_count"].as_i64().unwrap_or(0),
+            total_favorited: data["total_favorited"].as_i64().unwrap_or(0),
             aweme_count: data["aweme_count"].as_i64().unwrap_or(0),
             favoriting_count: data["favoriting_count"].as_i64().unwrap_or(0),
             is_follow: false,

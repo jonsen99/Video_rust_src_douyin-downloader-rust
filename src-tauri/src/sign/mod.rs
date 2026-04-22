@@ -37,8 +37,7 @@ pub fn rc4_encrypt(plaintext: &[u8], key: &[u8]) -> Vec<u8> {
 // ============================================================================
 
 const IV: [u32; 8] = [
-    0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600,
-    0xa96f30bc, 0x163138aa, 0xe38dee4d, 0xb0fb0e4e,
+    0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa, 0xe38dee4d, 0xb0fb0e4e,
 ];
 
 const TJ: [u32; 64] = {
@@ -60,11 +59,19 @@ fn rotate_left(x: u32, n: u32) -> u32 {
 }
 
 fn ff(x: u32, y: u32, z: u32, j: usize) -> u32 {
-    if j < 16 { x ^ y ^ z } else { (x & y) | (x & z) | (y & z) }
+    if j < 16 {
+        x ^ y ^ z
+    } else {
+        (x & y) | (x & z) | (y & z)
+    }
 }
 
 fn gg(x: u32, y: u32, z: u32, j: usize) -> u32 {
-    if j < 16 { x ^ y ^ z } else { (x & y) | (!x & z) }
+    if j < 16 {
+        x ^ y ^ z
+    } else {
+        (x & y) | (!x & z)
+    }
 }
 
 fn p0(x: u32) -> u32 {
@@ -95,7 +102,12 @@ impl SM3 {
         self.buffer.extend_from_slice(data);
 
         while self.buffer.len() >= 64 {
-            let block: [u8; 64] = self.buffer.drain(..64).collect::<Vec<_>>().try_into().unwrap();
+            let block: [u8; 64] = self
+                .buffer
+                .drain(..64)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
             self.compress(&block);
         }
     }
@@ -109,7 +121,8 @@ impl SM3 {
             self.buffer.push(0);
         }
 
-        self.buffer.extend_from_slice(&(bit_len as u64).to_be_bytes());
+        self.buffer
+            .extend_from_slice(&(bit_len as u64).to_be_bytes());
 
         if self.buffer.len() == 64 {
             let block: [u8; 64] = self.buffer.clone().try_into().unwrap();
@@ -157,7 +170,9 @@ impl SM3 {
 
         for i in 0..64 {
             let ss1 = rotate_left(
-                rotate_left(a[0], 12).wrapping_add(a[4]).wrapping_add(rotate_left(TJ[i], i as u32)),
+                rotate_left(a[0], 12)
+                    .wrapping_add(a[4])
+                    .wrapping_add(rotate_left(TJ[i], i as u32)),
                 7,
             );
             let ss2 = ss1 ^ rotate_left(a[0], 12);
@@ -273,11 +288,7 @@ fn generate_random_bytes() -> Vec<u8> {
 }
 
 /// 生成 RC4 加密的中间数据
-fn generate_rc4_bb(
-    params: &str,
-    user_agent: &str,
-    args: [u32; 3],
-) -> Vec<u8> {
+fn generate_rc4_bb(params: &str, user_agent: &str, args: [u32; 3]) -> Vec<u8> {
     let start_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -353,12 +364,49 @@ fn generate_rc4_bb(
     b[65] = (window_env_bytes.len() & 0xFF) as u8;
 
     // XOR 校验
-    b[72] = b[18] ^ b[20] ^ b[26] ^ b[30] ^ b[38] ^ b[40] ^ b[42]
-        ^ b[21] ^ b[27] ^ b[31] ^ b[35] ^ b[39] ^ b[41] ^ b[43]
-        ^ b[22] ^ b[28] ^ b[32] ^ b[36] ^ b[23] ^ b[29] ^ b[33]
-        ^ b[37] ^ b[44] ^ b[45] ^ b[46] ^ b[47] ^ b[48] ^ b[49]
-        ^ b[50] ^ b[24] ^ b[25] ^ b[52] ^ b[53] ^ b[54] ^ b[55]
-        ^ b[57] ^ b[58] ^ b[59] ^ b[60] ^ b[65] ^ b[66] ^ b[70] ^ b[71];
+    b[72] = b[18]
+        ^ b[20]
+        ^ b[26]
+        ^ b[30]
+        ^ b[38]
+        ^ b[40]
+        ^ b[42]
+        ^ b[21]
+        ^ b[27]
+        ^ b[31]
+        ^ b[35]
+        ^ b[39]
+        ^ b[41]
+        ^ b[43]
+        ^ b[22]
+        ^ b[28]
+        ^ b[32]
+        ^ b[36]
+        ^ b[23]
+        ^ b[29]
+        ^ b[33]
+        ^ b[37]
+        ^ b[44]
+        ^ b[45]
+        ^ b[46]
+        ^ b[47]
+        ^ b[48]
+        ^ b[49]
+        ^ b[50]
+        ^ b[24]
+        ^ b[25]
+        ^ b[52]
+        ^ b[53]
+        ^ b[54]
+        ^ b[55]
+        ^ b[57]
+        ^ b[58]
+        ^ b[59]
+        ^ b[60]
+        ^ b[65]
+        ^ b[66]
+        ^ b[70]
+        ^ b[71];
 
     // 构建 bb 数组
     let mut bb = Vec::new();
@@ -435,10 +483,9 @@ mod tests {
         let hash = sm3_hash(b"abc");
         // SM3("abc") 的标准测试向量
         let expected = [
-            0x66, 0xc7, 0xf0, 0xf4, 0x62, 0xee, 0xed, 0xd9,
-            0xd1, 0xf2, 0xd4, 0x6b, 0xdc, 0x10, 0xe4, 0xe2,
-            0x41, 0x67, 0xc4, 0x87, 0x5c, 0xf2, 0xf7, 0xa2,
-            0x2c, 0xa7, 0x97, 0x14, 0x83, 0x7a, 0x78, 0xe2,
+            0x66, 0xc7, 0xf0, 0xf4, 0x62, 0xee, 0xed, 0xd9, 0xd1, 0xf2, 0xd4, 0x6b, 0xdc, 0x10,
+            0xe4, 0xe2, 0x41, 0x67, 0xc4, 0x87, 0x5c, 0xf2, 0xf7, 0xa2, 0x2c, 0xa7, 0x97, 0x14,
+            0x83, 0x7a, 0x78, 0xe2,
         ];
         assert_eq!(hash, expected);
     }

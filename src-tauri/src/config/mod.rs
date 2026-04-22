@@ -18,6 +18,9 @@ pub struct AppConfig {
     pub proxy: Option<String>,
     /// 最大并发下载数
     pub max_concurrent: usize,
+    /// 下载质量
+    #[serde(default = "default_download_quality")]
+    pub download_quality: String,
     /// 文件名模板
     #[serde(default)]
     pub filename_template: String,
@@ -38,7 +41,12 @@ pub struct AppConfig {
     pub language: String,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
+fn default_download_quality() -> String {
+    "auto".to_string()
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -51,6 +59,7 @@ impl Default for AppConfig {
             cookie: String::new(),
             proxy: None,
             max_concurrent: 3,
+            download_quality: default_download_quality(),
             filename_template: "{author}_{title}_{date}".to_string(),
             auto_create_folder: true,
             folder_name_template: "{author}".to_string(),
@@ -72,14 +81,12 @@ impl AppConfig {
 
         if config_path.exists() {
             match fs::read_to_string(&config_path) {
-                Ok(content) => {
-                    match serde_json::from_str(&content) {
-                        Ok(config) => return config,
-                        Err(e) => {
-                            log::warn!("Failed to parse config file: {}, using default", e);
-                        }
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(config) => return config,
+                    Err(e) => {
+                        log::warn!("Failed to parse config file: {}, using default", e);
                     }
-                }
+                },
                 Err(e) => {
                     log::warn!("Failed to read config file: {}, using default", e);
                 }
@@ -116,14 +123,18 @@ mod tests {
 
     #[test]
     fn deserializes_partial_config_with_defaults() {
-        let config: AppConfig = serde_json::from_str(r#"{
+        let config: AppConfig = serde_json::from_str(
+            r#"{
             "download_dir": "/tmp/downloads",
             "cookie": "sessionid=test"
-        }"#).expect("partial config should deserialize");
+        }"#,
+        )
+        .expect("partial config should deserialize");
 
         assert_eq!(config.download_path, "/tmp/downloads");
         assert_eq!(config.cookie, "sessionid=test");
         assert_eq!(config.max_concurrent, 3);
+        assert_eq!(config.download_quality, "auto");
     }
 }
 
@@ -168,7 +179,10 @@ pub fn get_common_params() -> HashMap<&'static str, &'static str> {
 pub fn get_common_headers(cookie: &str) -> HashMap<&'static str, String> {
     let mut headers = HashMap::new();
     headers.insert("Accept", "application/json, text/plain, */*".to_string());
-    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string());
+    headers.insert(
+        "Accept-Language",
+        "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string(),
+    );
     headers.insert("Referer", "https://www.douyin.com/".to_string());
     headers.insert("priority", "u=1, i".to_string());
     headers.insert("sec-fetch-site", "same-origin".to_string());
@@ -178,7 +192,8 @@ pub fn get_common_headers(cookie: &str) -> HashMap<&'static str, String> {
     headers.insert("sec-ch-ua-mobile", "?0".to_string());
     headers.insert(
         "sec-ch-ua",
-        "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\"".to_string(),
+        "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\""
+            .to_string(),
     );
     headers.insert("User-Agent", get_user_agent().to_string());
     if !cookie.is_empty() {

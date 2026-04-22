@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            label: macos-arm64
+          - target: x86_64-apple-darwin
+            label: macos-x64
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: cargo tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download and install this version.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} -b app -b dmg
+
+      - name: Package portable macOS zip
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          APP_PATH="$(find "$APP_DIR" -maxdepth 1 -name "*.app" -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            echo "Could not find built .app bundle"
+            find "src-tauri/target" -maxdepth 6 -name "*.app" -print || true
+            exit 1
+          fi
+          DEST="Douyin-Downloader_${VERSION}_${{ matrix.label }}_portable.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$DEST"
+          echo "Created: $DEST"
+
+      - name: Upload portable macOS zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: Douyin-Downloader_*_${{ matrix.label }}_portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows-installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app (NSIS installer)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: cargo tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download and install this version.'
+          releaseDraft: true
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc -b nsis
+
+  build-windows-portable:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build portable exe
+        run: cargo tauri build --target x86_64-pc-windows-msvc --no-bundle
+
+      - name: Rename and upload portable exe
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "src-tauri\target\x86_64-pc-windows-msvc\release",
+            "src-tauri\target\release"
+          ) | Where-Object { Test-Path $_ }
+
+          $exePath = $null
+          foreach ($dir in $candidates) {
+            $match = Get-ChildItem -Path $dir -Filter "*.exe" -File |
+              Where-Object { $_.Name -notmatch "setup|installer|uninstall" } |
+              Select-Object -First 1
+            if ($match) {
+              $exePath = $match.FullName
+              break
+            }
+          }
+
+          if (-not $exePath) {
+            Write-Error "Could not find built portable exe"
+            Get-ChildItem -Path "src-tauri\target" -Recurse -Filter "*.exe" | ForEach-Object { Write-Output $_.FullName }
+            exit 1
+          }
+
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          $dest = "Douyin-Downloader_${version}_x64_portable.exe"
+          Copy-Item $exePath $dest
+          Write-Output "Created: $dest"
+
+      - name: Upload portable exe to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: Douyin-Downloader_*_x64_portable.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: cargo tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download and install this version.'
+          releaseDraft: true
+          prerelease: false
+          args: --target x86_64-unknown-linux-gnu -b deb -b appimage

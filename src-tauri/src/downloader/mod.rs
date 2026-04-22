@@ -2,4 +2,4 @@
 
 pub mod downloader;
 
-pub use downloader::Downloader;
+pub use downloader::{Downloader, DownloaderEvent};
