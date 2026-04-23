@@ -179,50 +179,7 @@ impl Downloader {
     }
 
     fn select_video_download_url(&self, video: &VideoInfo) -> Option<String> {
-        let quality = DownloadQuality::from_config(&self.config.download_quality);
-        let candidates = collect_video_candidates(video);
-
-        if candidates.is_empty() {
-            return DouyinClient::get_no_watermark_url(video);
-        }
-
-        let selected = match quality {
-            DownloadQuality::Auto => candidates
-                .iter()
-                .find(|candidate| candidate.is_download_addr)
-                .or_else(|| candidates.iter().find(|candidate| candidate.is_h264))
-                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
-                .or_else(|| candidates.first()),
-            DownloadQuality::Highest => candidates
-                .iter()
-                .find(|candidate| candidate.is_download_addr)
-                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
-                .or_else(|| candidates.first()),
-            DownloadQuality::H264 => candidates
-                .iter()
-                .filter(|candidate| candidate.is_h264)
-                .max_by_key(|candidate| candidate.metric)
-                .or_else(|| {
-                    candidates
-                        .iter()
-                        .find(|candidate| candidate.is_download_addr)
-                })
-                .or_else(|| candidates.iter().max_by_key(|candidate| candidate.metric))
-                .or_else(|| candidates.first()),
-            DownloadQuality::Smallest => candidates
-                .iter()
-                .find(|candidate| candidate.is_lowbr)
-                .or_else(|| {
-                    candidates
-                        .iter()
-                        .filter(|candidate| candidate.metric > 0)
-                        .min_by_key(|candidate| candidate.metric)
-                })
-                .or_else(|| candidates.iter().find(|candidate| candidate.is_h264))
-                .or_else(|| candidates.first()),
-        };
-
-        selected.map(|candidate| candidate.url.clone())
+        select_video_url(video, DownloadQuality::from_config(&self.config.download_quality))
     }
 
     fn sanitize_author_dir(&self, author: &str) -> String {
@@ -712,7 +669,7 @@ impl Downloader {
         client: DouyinClient,
         sec_uid: String,
         batch_task_id: String,
-        nickname: String,
+        _nickname: String,
         estimated_total: usize,
     ) -> Result<()> {
         use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -729,20 +686,16 @@ impl Downloader {
         let completed_count = Arc::new(AtomicUsize::new(0));
         let skipped_count = Arc::new(AtomicUsize::new(0));
         let failed_count = Arc::new(AtomicUsize::new(0));
-        let fetching_done = Arc::new(tokio::sync::Notify::new());
 
         // 克隆变量
         let cancel_tokens = self.cancel_tokens.clone();
         let pause_tokens = self.pause_tokens.clone();
         let progress_tx = self.progress_tx.clone();
         let history = self.history.clone();
-        let tasks = self.tasks.clone();
         let config = self.config.clone();
         let http_client = self.client.clone();
 
-        let batch_id = batch_task_id.clone();
         let batch_id_fetch = batch_task_id.clone();
-        let nickname_clone = nickname.clone();
         let sec_uid_clone = sec_uid.clone();
 
         // === 获取任务：分页获取视频并发送到队列 ===
@@ -918,7 +871,7 @@ impl Downloader {
                     let http_client = http_client.clone();
 
                     let aweme_id = video.aweme_id.clone();
-                    let display_name = truncate_chars(&video.desc, 8);
+                    let _display_name = truncate_chars(&video.desc, 8);
                     let start_time = Instant::now();
 
                     // 启动下载任务
@@ -1905,29 +1858,28 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
         return None;
     }
 
+    // 单次遍历收集所有候选特征
+    let download_addr = candidates.iter().find(|c| c.is_download_addr);
+    let h264_best = candidates
+        .iter()
+        .filter(|c| c.is_h264)
+        .max_by_key(|c| c.metric);
+    let highest_metric = candidates.iter().max_by_key(|c| c.metric);
+    let lowbr = candidates.iter().find(|c| c.is_lowbr);
+    let smallest_metric = candidates
+        .iter()
+        .filter(|c| c.metric > 0)
+        .min_by_key(|c| c.metric);
+    let first = candidates.first();
+
     let selected = match quality {
-        DownloadQuality::Highest => candidates
-            .iter()
-            .find(|c| c.is_download_addr)
-            .or_else(|| candidates.iter().max_by_key(|c| c.metric))
-            .or_else(|| candidates.first()),
-        DownloadQuality::H264 => candidates
-            .iter()
-            .filter(|c| c.is_h264)
-            .max_by_key(|c| c.metric)
-            .or_else(|| candidates.iter().find(|c| c.is_download_addr))
-            .or_else(|| candidates.first()),
-        DownloadQuality::Smallest => candidates
-            .iter()
-            .find(|c| c.is_lowbr)
-            .or_else(|| candidates.iter().filter(|c| c.metric > 0).min_by_key(|c| c.metric))
-            .or_else(|| candidates.first()),
-        DownloadQuality::Auto => candidates
-            .iter()
-            .find(|c| c.is_download_addr)
-            .or_else(|| candidates.iter().find(|c| c.is_h264))
-            .or_else(|| candidates.iter().max_by_key(|c| c.metric))
-            .or_else(|| candidates.first()),
+        DownloadQuality::Auto => download_addr.or(h264_best).or(highest_metric).or(first),
+        DownloadQuality::Highest => download_addr.or(highest_metric).or(first),
+        DownloadQuality::H264 => h264_best.or(download_addr).or(highest_metric).or(first),
+        DownloadQuality::Smallest => lowbr
+            .or(smallest_metric)
+            .or(h264_best)
+            .or(first),
     };
 
     selected.map(|c| c.url.clone())

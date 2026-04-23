@@ -2,20 +2,23 @@
 
 pub mod api;
 pub mod config;
+pub mod cookie;
 pub mod downloader;
 pub mod history;
 pub mod media_proxy;
+pub mod media_utils;
 pub mod sign;
 
-use api::{CookieStatus, DouyinClient, DownloadHistory, DownloadMediaItem, MediaType, UserInfo, VideoInfo};
+use api::{CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
 use config::AppConfig;
+use cookie::{CookieLoginSession, has_douyin_login_cookie, parse_cookie_string, serialize_cookie_string, verify_douyin_login_cookie};
 use downloader::{Downloader, DownloaderEvent};
 use history::HistoryManager;
+use media_utils::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
-use tauri::webview::Cookie;
 use tokio::sync::{mpsc, Mutex};
 use url::Url;
 
@@ -30,12 +33,6 @@ pub struct AppState {
     pub(crate) cookie_login: Arc<Mutex<Option<CookieLoginSession>>>,
     pub(crate) media_http_client: reqwest::Client,
     pub(crate) media_redirect_cache: Arc<Mutex<HashMap<String, String>>>,
-}
-
-#[derive(Clone)]
-pub struct CookieLoginSession {
-    pub label: String,
-    pub cancelled: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -72,449 +69,6 @@ async fn get_client(state: &State<'_, AppState>) -> Result<DouyinClient, String>
 
 async fn emit_cookie_login_status(app: &tauri::AppHandle, payload: serde_json::Value) {
     let _ = app.emit("cookie-login-status", payload);
-}
-
-fn serialize_cookie_string(cookies: &[Cookie<'static>]) -> String {
-    cookies
-        .iter()
-        .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn parse_cookie_string(cookie_string: &str) -> Vec<Cookie<'static>> {
-    cookie_string
-        .split(';')
-        .filter_map(|item| {
-            let item = item.trim();
-            if item.is_empty() || !item.contains('=') {
-                return None;
-            }
-
-            Cookie::parse(format!("{item}; Domain=.douyin.com; Path=/"))
-                .ok()
-                .map(|cookie| cookie.into_owned())
-        })
-        .collect()
-}
-
-fn has_douyin_login_cookie(cookies: &[Cookie<'static>]) -> bool {
-    let mut cookie_names = HashSet::new();
-    let mut passport_auth_status = None;
-
-    for cookie in cookies {
-        let name = cookie.name().to_string();
-        if name == "passport_auth_status" {
-            passport_auth_status = Some(cookie.value().to_string());
-        }
-        cookie_names.insert(name);
-    }
-
-    passport_auth_status.as_deref() == Some("1")
-        || cookie_names.contains("sessionid")
-        || cookie_names.contains("sessionid_ss")
-        || cookie_names.contains("sid_guard")
-}
-
-async fn verify_douyin_login_cookie(
-    config: &AppConfig,
-    cookie: &str,
-) -> Result<UserInfo, String> {
-    let mut next_config = config.clone();
-    next_config.cookie = cookie.to_string();
-
-    let client = DouyinClient::new(next_config)
-        .map_err(|error| format!("创建 Cookie 校验客户端失败: {}", error))?;
-
-    client
-        .get_current_user()
-        .await
-        .map_err(|error| format!("登录态校验失败: {}", error))
-}
-
-fn normalize_duration_seconds(value: i64) -> i64 {
-    if value <= 0 {
-        return 0;
-    }
-
-    if value >= 100_000 {
-        return std::cmp::max(1, (value as f64 / 100_000.0).round() as i64);
-    }
-    if value >= 1_000 {
-        return std::cmp::max(1, (value as f64 / 1_000.0).round() as i64);
-    }
-    if value >= 100 {
-        return std::cmp::max(1, (value as f64 / 100.0).round() as i64);
-    }
-
-    std::cmp::max(1, value)
-}
-
-fn python_media_type(video: &VideoInfo) -> &'static str {
-    let has_images = video
-        .image_urls
-        .as_ref()
-        .map(|urls| !urls.is_empty())
-        .unwrap_or(false);
-    let has_live = video.has_live_photo
-        || video
-            .live_photo_urls
-            .as_ref()
-            .map(|urls| !urls.is_empty())
-            .unwrap_or(false);
-
-    if has_live && has_images {
-        "mixed"
-    } else if has_live {
-        "live_photo"
-    } else if has_images || video.is_image {
-        "image"
-    } else if !video.video.play_addr.is_empty() {
-        "video"
-    } else {
-        "unknown"
-    }
-}
-
-fn python_media_urls(video: &VideoInfo) -> Vec<serde_json::Value> {
-    let mut items = Vec::new();
-
-    if let Some(urls) = &video.live_photo_urls {
-        for url in urls {
-            if !url.is_empty() {
-                items.push(serde_json::json!({ "type": "live_photo", "url": url }));
-            }
-        }
-    }
-
-    if let Some(urls) = &video.image_urls {
-        for url in urls {
-            if !url.is_empty() {
-                items.push(serde_json::json!({ "type": "image", "url": url }));
-            }
-        }
-    }
-
-    if items.is_empty() && !video.video.play_addr.is_empty() {
-        items.push(serde_json::json!({ "type": "video", "url": video.video.play_addr }));
-    }
-
-    items
-}
-
-fn python_cover_url(video: &VideoInfo) -> String {
-    if !video.video.cover.is_empty() {
-        return video.video.cover.clone();
-    }
-
-    video
-        .image_urls
-        .as_ref()
-        .and_then(|urls| urls.first())
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn python_music_play_url(video: &VideoInfo) -> String {
-    video
-        .music
-        .as_ref()
-        .and_then(|music| music.play_url.clone())
-        .unwrap_or_default()
-}
-
-fn python_music_info(video: &VideoInfo) -> serde_json::Value {
-    let play_url = python_music_play_url(video);
-    serde_json::json!({
-        "title": video.music.as_ref().map(|music| music.title.clone()).unwrap_or_default(),
-        "author": video.music.as_ref().map(|music| music.author.clone()).unwrap_or_default(),
-        "play_url": play_url,
-        "duration": normalize_duration_seconds(video.music.as_ref().map(|music| music.duration).unwrap_or(0)),
-    })
-}
-
-fn python_user_value(user: &UserInfo) -> serde_json::Value {
-    serde_json::json!({
-        "nickname": user.nickname,
-        "unique_id": user.unique_id,
-        "follower_count": user.follower_count,
-        "following_count": user.following_count,
-        "total_favorited": user.total_favorited,
-        "aweme_count": user.aweme_count,
-        "signature": user.signature,
-        "sec_uid": user.sec_uid,
-        "avatar_thumb": user.avatar_thumb,
-        "avatar_larger": user.avatar_larger,
-    })
-}
-
-fn python_video_summary(
-    video: &VideoInfo,
-    include_duration: bool,
-    include_music: bool,
-) -> serde_json::Value {
-    let media_type = python_media_type(video);
-    let media_urls = python_media_urls(video);
-    let mut bgm_url = python_music_play_url(video);
-
-    if bgm_url.is_empty() && !video.video.play_addr.is_empty() {
-        bgm_url = video.video.play_addr.clone();
-    }
-
-    let mut value = serde_json::json!({
-        "aweme_id": video.aweme_id,
-        "desc": video.desc,
-        "create_time": video.create_time,
-        "digg_count": video.statistics.digg_count,
-        "comment_count": video.statistics.comment_count,
-        "share_count": video.statistics.share_count,
-        "cover_url": python_cover_url(video),
-        "media_type": media_type,
-        "media_urls": media_urls,
-        "bgm_url": bgm_url,
-        "author": {
-            "nickname": video.author.nickname,
-            "avatar_thumb": video.author.avatar_thumb,
-            "sec_uid": video.author.sec_uid,
-        }
-    });
-
-    if include_duration {
-        value["duration"] = serde_json::json!(normalize_duration_seconds(video.video.duration));
-    }
-
-    if include_music {
-        let music = python_music_info(video);
-        value["music"] = music.clone();
-        value["music_title"] = music["title"].clone();
-        value["music_author"] = music["author"].clone();
-        value["music_url"] = music["play_url"].clone();
-        value["music_duration"] = music["duration"].clone();
-    }
-
-    value
-}
-
-fn python_video_detail_value(video: &VideoInfo) -> serde_json::Value {
-    let media_type = python_media_type(video);
-    let media_urls = python_media_urls(video);
-
-    serde_json::json!({
-        "aweme_id": video.aweme_id,
-        "desc": video.desc,
-        "create_time": video.create_time,
-        "digg_count": video.statistics.digg_count,
-        "comment_count": video.statistics.comment_count,
-        "share_count": video.statistics.share_count,
-        "author": {
-            "nickname": video.author.nickname,
-            "unique_id": video.author.uid,
-            "sec_uid": video.author.sec_uid,
-            "avatar_thumb": video.author.avatar_thumb,
-        },
-        "statistics": {
-            "digg_count": video.statistics.digg_count,
-            "comment_count": video.statistics.comment_count,
-            "share_count": video.statistics.share_count,
-            "play_count": video.statistics.play_count,
-        },
-        "media_type": media_type,
-        "media_urls": media_urls.clone(),
-        "raw_media_type": media_type,
-        "cover_url": python_cover_url(video),
-        "images": video.image_urls.clone().unwrap_or_default(),
-        "videos": media_urls,
-        "bgm_url": python_music_play_url(video),
-    })
-}
-
-fn python_recommended_video(video: &VideoInfo) -> serde_json::Value {
-    let music = python_music_info(video);
-
-    serde_json::json!({
-        "aweme_id": video.aweme_id,
-        "desc": video.desc,
-        "create_time": video.create_time,
-        "author": {
-            "uid": video.author.uid,
-            "nickname": video.author.nickname,
-            "avatar_thumb": video.author.avatar_thumb,
-            "sec_uid": video.author.sec_uid,
-        },
-        "statistics": {
-            "digg_count": video.statistics.digg_count,
-            "comment_count": video.statistics.comment_count,
-            "share_count": video.statistics.share_count,
-            "play_count": video.statistics.play_count,
-        },
-        "video": {
-            "cover": video.video.cover,
-            "dynamic_cover": video.video.dynamic_cover,
-            "play_addr": video.video.play_addr,
-            "width": video.video.width,
-            "height": video.video.height,
-            "duration": normalize_duration_seconds(video.video.duration),
-        },
-        "music": {
-            "title": music["title"],
-            "author": music["author"],
-            "play_url": music["play_url"],
-            "duration": music["duration"],
-            "cover": video.music.as_ref().map(|item| item.cover_thumb.clone()).unwrap_or_default(),
-        }
-    })
-}
-
-fn download_media_type_from_payload(payload: &serde_json::Value) -> String {
-    if let Some(value) = payload.get("raw_media_type") {
-        if let Some(media_type) = value.as_str() {
-            return media_type.trim().to_lowercase();
-        }
-        if let Some(code) = value.as_i64() {
-            return match code {
-                1 => "image".to_string(),
-                _ => "video".to_string(),
-            };
-        }
-    }
-
-    if let Some(media_type) = payload.get("media_type").and_then(|value| value.as_str()) {
-        return media_type.trim().to_lowercase();
-    }
-
-    "video".to_string()
-}
-
-fn infer_download_item_type(url: &str, fallback_type: &str) -> String {
-    let lower_url = url.to_lowercase();
-
-    if lower_url.ends_with(".mp3") || lower_url.ends_with(".m4a") {
-        return "audio".to_string();
-    }
-    if lower_url.ends_with(".jpg")
-        || lower_url.ends_with(".jpeg")
-        || lower_url.ends_with(".png")
-        || lower_url.ends_with(".webp")
-        || lower_url.ends_with(".gif")
-        || lower_url.contains("/image")
-        || lower_url.contains("imagex")
-    {
-        return "image".to_string();
-    }
-
-    match fallback_type {
-        "image" | "live_photo" | "video" | "audio" => fallback_type.to_string(),
-        _ => "video".to_string(),
-    }
-}
-
-fn parse_download_media_items(
-    payload: &serde_json::Value,
-    fallback_type: &str,
-) -> Vec<DownloadMediaItem> {
-    let mut items = Vec::new();
-
-    if let Some(media_urls) = payload.get("media_urls").and_then(|value| value.as_array()) {
-        for media in media_urls {
-            let (media_type, url) = if let Some(url) = media.as_str() {
-                (
-                    infer_download_item_type(url.trim(), fallback_type),
-                    url.trim().to_string(),
-                )
-            } else {
-                let url = media
-                    .get("url")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let media_type = media
-                    .get("type")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim().to_lowercase())
-                    .unwrap_or_else(|| infer_download_item_type(&url, fallback_type));
-                (media_type, url)
-            };
-
-            if url.is_empty() || media_type == "audio" {
-                continue;
-            }
-
-            items.push(DownloadMediaItem {
-                r#type: media_type,
-                url,
-            });
-        }
-    }
-
-    items
-}
-
-fn download_media_items_from_video(video: &VideoInfo) -> Vec<DownloadMediaItem> {
-    let mut items = Vec::new();
-
-    if let Some(urls) = &video.live_photo_urls {
-        for url in urls {
-            if !url.trim().is_empty() {
-                items.push(DownloadMediaItem {
-                    r#type: "live_photo".to_string(),
-                    url: url.clone(),
-                });
-            }
-        }
-    }
-
-    if let Some(urls) = &video.image_urls {
-        for url in urls {
-            if !url.trim().is_empty() {
-                items.push(DownloadMediaItem {
-                    r#type: "image".to_string(),
-                    url: url.clone(),
-                });
-            }
-        }
-    }
-
-    if items.is_empty() {
-        if let Some(url) = DouyinClient::get_no_watermark_url(video) {
-            items.push(DownloadMediaItem {
-                r#type: "video".to_string(),
-                url,
-            });
-        } else if !video.video.play_addr.trim().is_empty() {
-            items.push(DownloadMediaItem {
-                r#type: "video".to_string(),
-                url: video.video.play_addr.clone(),
-            });
-        }
-    }
-
-    items
-}
-
-fn media_type_from_payload_or_items(raw_media_type: &str, items: &[DownloadMediaItem]) -> MediaType {
-    if !raw_media_type.is_empty() {
-        return match raw_media_type {
-            "image" => MediaType::Image,
-            "live_photo" => MediaType::LivePhoto,
-            "mixed" => MediaType::Mixed,
-            "audio" => MediaType::Audio,
-            _ => MediaType::Video,
-        };
-    }
-
-    let has_live = items.iter().any(|item| item.r#type == "live_photo");
-    let has_image = items.iter().any(|item| item.r#type == "image");
-
-    if has_live && has_image {
-        MediaType::Mixed
-    } else if has_live {
-        MediaType::LivePhoto
-    } else if has_image {
-        MediaType::Image
-    } else {
-        MediaType::Video
-    }
 }
 
 // ============================================================================
@@ -588,7 +142,6 @@ fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 #[allow(dead_code)]
 async fn verify_cookie_simple(cookie: String) -> Result<bool, String> {
-    // 简单检查 cookie 是否包含 sessionid
     Ok(cookie.contains("sessionid"))
 }
 
@@ -932,11 +485,9 @@ async fn cancel_cookie_browser_login(
 async fn parse_url(state: State<'_, AppState>, url: String) -> Result<VideoInfo, String> {
     let client = get_client(&state).await?;
 
-    // 提取视频 ID
     let aweme_id = DouyinClient::extract_aweme_id(&url)
         .ok_or_else(|| "Invalid URL or video ID".to_string())?;
 
-    // 获取视频详情
     let video = client
         .get_video_detail(&aweme_id)
         .await
@@ -1536,7 +1087,6 @@ async fn download_user_videos(
     let batch_task_id = uuid::Uuid::new_v4().to_string();
     let total_videos = aweme_count.max(0) as usize;
 
-    // 获取下载器
     let downloader = {
         let downloader_guard = state.downloader.lock().await;
         match downloader_guard.as_ref() {
@@ -1550,17 +1100,14 @@ async fn download_user_videos(
         }
     };
 
-    // 克隆需要的变量
     let batch_id = batch_task_id.clone();
     let nickname_clone = nickname.clone();
     let sec_uid_clone = sec_uid.clone();
     let client_clone = client.clone();
     let downloader_clone = downloader.clone();
 
-    // 发送开始事件
     downloader.emit_batch_started(&batch_id, &nickname, total_videos).await;
 
-    // 在后台任务中执行边获取边下载
     tokio::spawn(async move {
         if let Err(e) = downloader_clone.start_streaming_download(
             client_clone,
@@ -1598,7 +1145,6 @@ async fn download_liked_videos(
         }
     };
 
-    // 获取点赞视频
     let (videos, _, _) = match client.get_liked_videos("", 0, count).await {
         Ok(result) => result,
         Err(e) => {
@@ -1620,7 +1166,6 @@ async fn download_liked_videos(
     let total_videos = videos.len();
     let batch_task_id_clone = batch_task_id.clone();
 
-    // 获取下载器并启动批量下载
     {
         let downloader_guard = state.downloader.lock().await;
         let downloader = match downloader_guard.as_ref() {
@@ -1636,7 +1181,6 @@ async fn download_liked_videos(
         let downloader_clone = downloader.clone();
         let videos_clone = videos.clone();
 
-        // 在后台任务中执行批量下载
         tokio::spawn(async move {
             if let Err(e) = downloader_clone.start_batch_download(videos_clone, batch_task_id_clone, "点赞视频".to_string()).await {
                 log::error!("Batch download error: {}", e);
@@ -1948,7 +1492,7 @@ async fn delete_file(path: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{download_media_type_from_payload, parse_download_media_items};
+    use super::media_utils::{download_media_type_from_payload, parse_download_media_items};
 
     #[test]
     fn parses_flat_download_media_items() {
@@ -2006,7 +1550,6 @@ pub fn run() {
                     .build(),
             )?;
 
-            // 初始化应用状态
             let state = AppState::new();
             *state.app_handle.blocking_lock() = Some(app.handle().clone());
             tauri::async_runtime::spawn({
@@ -2019,7 +1562,6 @@ pub fn run() {
             });
             app.manage(state);
 
-            // 开发模式下打开开发者工具
             #[cfg(debug_assertions)]
             {
                 use tauri::Manager;
@@ -2031,12 +1573,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // 配置
             init_client,
             get_config,
             save_config,
             select_directory,
-            // 视频/用户
             parse_url,
             parse_link,
             get_video_detail,
@@ -2047,13 +1587,11 @@ pub fn run() {
             get_liked_authors,
             get_recommended,
             get_comments,
-            // Cookie
             verify_cookie,
             get_current_user,
             open_verify_browser,
             cookie_browser_login,
             cancel_cookie_browser_login,
-            // 下载
             download_video,
             download_user_videos,
             download_liked_videos,
@@ -2065,12 +1603,10 @@ pub fn run() {
             remove_download_task,
             pause_download,
             resume_download,
-            // 历史
             get_history,
             clear_history,
             delete_history,
             add_history,
-            // 文件操作
             open_file_location,
             delete_file,
         ])

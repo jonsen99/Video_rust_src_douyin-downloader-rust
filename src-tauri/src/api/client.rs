@@ -44,71 +44,6 @@ impl DouyinClient {
         })
     }
 
-    fn build_common_params() -> HashMap<String, String> {
-        let mut params = HashMap::new();
-        params.insert("device_platform".to_string(), "webapp".to_string());
-        params.insert("aid".to_string(), "6383".to_string());
-        params.insert("channel".to_string(), "channel_pc_web".to_string());
-        params.insert("update_version_code".to_string(), "0".to_string());
-        params.insert("pc_client_type".to_string(), "1".to_string());
-        params.insert("version_code".to_string(), "190600".to_string());
-        params.insert("version_name".to_string(), "19.6.0".to_string());
-        params.insert("cookie_enabled".to_string(), "true".to_string());
-        params.insert("screen_width".to_string(), "1680".to_string());
-        params.insert("screen_height".to_string(), "1050".to_string());
-        params.insert("browser_language".to_string(), "zh-CN".to_string());
-        params.insert("browser_platform".to_string(), "MacIntel".to_string());
-        params.insert("browser_name".to_string(), "Edge".to_string());
-        params.insert("browser_version".to_string(), "145.0.0.0".to_string());
-        params.insert("browser_online".to_string(), "true".to_string());
-        params.insert("engine_name".to_string(), "Blink".to_string());
-        params.insert("engine_version".to_string(), "145.0.0.0".to_string());
-        params.insert("os_name".to_string(), "Mac OS".to_string());
-        params.insert("os_version".to_string(), "10.15.7".to_string());
-        params.insert("cpu_core_num".to_string(), "8".to_string());
-        params.insert("device_memory".to_string(), "8".to_string());
-        params.insert("platform".to_string(), "PC".to_string());
-        params.insert("downlink".to_string(), "10".to_string());
-        params.insert("effective_type".to_string(), "4g".to_string());
-        params.insert("round_trip_time".to_string(), "50".to_string());
-        params.insert("pc_libra_divert".to_string(), "Mac".to_string());
-        params.insert("support_h265".to_string(), "1".to_string());
-        params.insert("support_dash".to_string(), "1".to_string());
-        params.insert("disable_rs".to_string(), "0".to_string());
-        params.insert("need_filter_settings".to_string(), "1".to_string());
-        params.insert("list_type".to_string(), "single".to_string());
-        params
-    }
-
-    fn build_common_headers(cookie: &str) -> HashMap<String, String> {
-        let mut headers = HashMap::new();
-        headers.insert("User-Agent".to_string(), get_user_agent().to_string());
-        headers.insert(
-            "Accept".to_string(),
-            "application/json, text/plain, */*".to_string(),
-        );
-        headers.insert(
-            "Accept-Language".to_string(),
-            "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string(),
-        );
-        headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
-        headers.insert("priority".to_string(), "u=1, i".to_string());
-        headers.insert("sec-fetch-site".to_string(), "same-origin".to_string());
-        headers.insert("sec-fetch-mode".to_string(), "cors".to_string());
-        headers.insert("sec-fetch-dest".to_string(), "empty".to_string());
-        headers.insert("sec-ch-ua-platform".to_string(), "\"macOS\"".to_string());
-        headers.insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
-        headers.insert(
-            "sec-ch-ua".to_string(),
-            "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\""
-                .to_string(),
-        );
-        if !cookie.is_empty() {
-            headers.insert("Cookie".to_string(), cookie.to_string());
-        }
-        headers
-    }
-
     fn cookies_to_dict(cookie_str: &str) -> HashMap<String, String> {
         let mut cookie_dict = HashMap::new();
 
@@ -285,7 +220,7 @@ impl DouyinClient {
         skip_sign: bool,
     ) -> Result<T> {
         let started_at = Instant::now();
-        let mut all_params = Self::build_common_params();
+        let mut all_params = crate::config::get_common_params();
 
         if let Some(p) = params {
             for (key, value) in p {
@@ -293,7 +228,7 @@ impl DouyinClient {
             }
         }
 
-        let mut headers = Self::build_common_headers(&self.config.cookie);
+        let mut headers = crate::config::get_common_headers(&self.config.cookie);
         if let Some(extra) = extra_headers {
             headers.extend(extra);
         }

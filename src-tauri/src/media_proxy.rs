@@ -257,15 +257,19 @@ async fn media_proxy(
 
     let status = upstream_response.status();
     let mut response_builder = Response::builder().status(status);
-    let response_headers = response_builder.headers_mut().expect("headers available");
+    let response_headers = match response_builder.headers_mut() {
+        Some(h) => h,
+        None => return build_error_response(StatusCode::BAD_GATEWAY, "Failed to build response"),
+    };
 
-    for header_name in ["content-type", "content-range", "accept-ranges"] {
+    let copy_headers: [(axum::http::header::HeaderName, &str); 3] = [
+        (header::CONTENT_TYPE, "content-type"),
+        (header::CONTENT_RANGE, "content-range"),
+        (header::ACCEPT_RANGES, "accept-ranges"),
+    ];
+    for (header_ref, header_name) in copy_headers {
         if let Some(value) = upstream_response.headers().get(header_name) {
-            response_headers.insert(
-                axum::http::header::HeaderName::from_lowercase(header_name.as_bytes())
-                    .expect("valid header"),
-                value.clone(),
-            );
+            response_headers.insert(header_ref, value.clone());
         }
     }
 

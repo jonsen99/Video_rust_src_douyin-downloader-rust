@@ -97,6 +97,8 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
+        self.validate()?;
+
         let config_path = Self::config_path();
 
         if let Some(parent) = config_path.parent() {
@@ -105,6 +107,43 @@ impl AppConfig {
 
         let content = serde_json::to_string_pretty(self)?;
         fs::write(&config_path, content)?;
+
+        Ok(())
+    }
+
+    /// 验证配置是否合法
+    pub fn validate(&self) -> anyhow::Result<()> {
+        const MAX_CONCURRENT_MIN: usize = 1;
+        const MAX_CONCURRENT_MAX: usize = 20;
+
+        if !(MAX_CONCURRENT_MIN..=MAX_CONCURRENT_MAX).contains(&self.max_concurrent) {
+            anyhow::bail!(
+                "max_concurrent must be between {} and {}, got {}",
+                MAX_CONCURRENT_MIN,
+                MAX_CONCURRENT_MAX,
+                self.max_concurrent
+            );
+        }
+
+        if let Some(proxy) = &self.proxy {
+            if !proxy.is_empty() && !proxy.starts_with("http://") && !proxy.starts_with("https://") {
+                anyhow::bail!("proxy must start with http:// or https://");
+            }
+        }
+
+        if !self.download_path.is_empty() {
+            let path = std::path::Path::new(&self.download_path);
+            if path.exists() && !path.is_dir() {
+                anyhow::bail!("download_path must be a directory, not a file");
+            }
+        }
+
+        if !matches!(self.download_quality.as_str(), "auto" | "highest" | "h264" | "smallest") {
+            anyhow::bail!(
+                "download_quality must be one of: auto, highest, h264, smallest, got {}",
+                self.download_quality
+            );
+        }
 
         Ok(())
     }
@@ -139,65 +178,65 @@ mod tests {
 }
 
 /// 抖音通用请求参数
-pub fn get_common_params() -> HashMap<&'static str, &'static str> {
+pub fn get_common_params() -> HashMap<String, String> {
     let mut params = HashMap::new();
-    params.insert("device_platform", "webapp");
-    params.insert("aid", "6383");
-    params.insert("channel", "channel_pc_web");
-    params.insert("update_version_code", "0");
-    params.insert("pc_client_type", "1");
-    params.insert("version_code", "190600");
-    params.insert("version_name", "19.6.0");
-    params.insert("cookie_enabled", "true");
-    params.insert("browser_language", "zh-CN");
-    params.insert("browser_platform", "MacIntel");
-    params.insert("browser_name", "Edge");
-    params.insert("browser_version", "145.0.0.0");
-    params.insert("browser_online", "true");
-    params.insert("engine_name", "Blink");
-    params.insert("engine_version", "145.0.0.0");
-    params.insert("os_name", "Mac OS");
-    params.insert("os_version", "10.15.7");
-    params.insert("cpu_core_num", "8");
-    params.insert("device_memory", "8");
-    params.insert("platform", "PC");
-    params.insert("screen_width", "1680");
-    params.insert("screen_height", "1050");
-    params.insert("downlink", "10");
-    params.insert("effective_type", "4g");
-    params.insert("round_trip_time", "50");
-    params.insert("pc_libra_divert", "Mac");
-    params.insert("support_h265", "1");
-    params.insert("support_dash", "1");
-    params.insert("disable_rs", "0");
-    params.insert("need_filter_settings", "1");
-    params.insert("list_type", "single");
+    params.insert("device_platform".to_string(), "webapp".to_string());
+    params.insert("aid".to_string(), "6383".to_string());
+    params.insert("channel".to_string(), "channel_pc_web".to_string());
+    params.insert("update_version_code".to_string(), "0".to_string());
+    params.insert("pc_client_type".to_string(), "1".to_string());
+    params.insert("version_code".to_string(), "190600".to_string());
+    params.insert("version_name".to_string(), "19.6.0".to_string());
+    params.insert("cookie_enabled".to_string(), "true".to_string());
+    params.insert("browser_language".to_string(), "zh-CN".to_string());
+    params.insert("browser_platform".to_string(), "MacIntel".to_string());
+    params.insert("browser_name".to_string(), "Edge".to_string());
+    params.insert("browser_version".to_string(), "145.0.0.0".to_string());
+    params.insert("browser_online".to_string(), "true".to_string());
+    params.insert("engine_name".to_string(), "Blink".to_string());
+    params.insert("engine_version".to_string(), "145.0.0.0".to_string());
+    params.insert("os_name".to_string(), "Mac OS".to_string());
+    params.insert("os_version".to_string(), "10.15.7".to_string());
+    params.insert("cpu_core_num".to_string(), "8".to_string());
+    params.insert("device_memory".to_string(), "8".to_string());
+    params.insert("platform".to_string(), "PC".to_string());
+    params.insert("screen_width".to_string(), "1680".to_string());
+    params.insert("screen_height".to_string(), "1050".to_string());
+    params.insert("downlink".to_string(), "10".to_string());
+    params.insert("effective_type".to_string(), "4g".to_string());
+    params.insert("round_trip_time".to_string(), "50".to_string());
+    params.insert("pc_libra_divert".to_string(), "Mac".to_string());
+    params.insert("support_h265".to_string(), "1".to_string());
+    params.insert("support_dash".to_string(), "1".to_string());
+    params.insert("disable_rs".to_string(), "0".to_string());
+    params.insert("need_filter_settings".to_string(), "1".to_string());
+    params.insert("list_type".to_string(), "single".to_string());
     params
 }
 
 /// 通用请求头
-pub fn get_common_headers(cookie: &str) -> HashMap<&'static str, String> {
+pub fn get_common_headers(cookie: &str) -> HashMap<String, String> {
     let mut headers = HashMap::new();
-    headers.insert("Accept", "application/json, text/plain, */*".to_string());
+    headers.insert("Accept".to_string(), "application/json, text/plain, */*".to_string());
     headers.insert(
-        "Accept-Language",
+        "Accept-Language".to_string(),
         "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string(),
     );
-    headers.insert("Referer", "https://www.douyin.com/".to_string());
-    headers.insert("priority", "u=1, i".to_string());
-    headers.insert("sec-fetch-site", "same-origin".to_string());
-    headers.insert("sec-fetch-mode", "cors".to_string());
-    headers.insert("sec-fetch-dest", "empty".to_string());
-    headers.insert("sec-ch-ua-platform", "\"macOS\"".to_string());
-    headers.insert("sec-ch-ua-mobile", "?0".to_string());
+    headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+    headers.insert("priority".to_string(), "u=1, i".to_string());
+    headers.insert("sec-fetch-site".to_string(), "same-origin".to_string());
+    headers.insert("sec-fetch-mode".to_string(), "cors".to_string());
+    headers.insert("sec-fetch-dest".to_string(), "empty".to_string());
+    headers.insert("sec-ch-ua-platform".to_string(), "\"macOS\"".to_string());
+    headers.insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
     headers.insert(
-        "sec-ch-ua",
+        "sec-ch-ua".to_string(),
         "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\""
             .to_string(),
     );
-    headers.insert("User-Agent", get_user_agent().to_string());
+    headers.insert("User-Agent".to_string(), get_user_agent().to_string());
     if !cookie.is_empty() {
-        headers.insert("Cookie", cookie.to_string());
+        headers.insert("Cookie".to_string(), cookie.to_string());
     }
     headers
 }
