@@ -46,12 +46,15 @@
 ## 界面预览
 
 <p align="center">
-  <img src="docs/home.png" width="45%" alt="主页">
-  <img src="docs/user_detail.png" width="45%" alt="用户详情">
+  <img src="docs/home.png" width="90%" alt="主页">
 </p>
 
 <p align="center">
-  <img src="docs/playvideo.png" width="45%" alt="视频播放">
+  <img src="docs/user_detail.png" width="90%" alt="用户详情">
+</p>
+
+<p align="center">
+  <img src="docs/playvideo.png" width="90%" alt="视频播放">
 </p>
 
 ---
