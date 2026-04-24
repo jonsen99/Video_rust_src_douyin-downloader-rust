@@ -28,9 +28,19 @@
 
             <!-- Center: Search + Link input -->
             <div class="nav-center">
-                <div class="input-group nav-search-input">
-                    <input type="text" class="form-control" id="search-input" placeholder="搜索用户...">
-                    <button class="btn btn-primary" id="search-btn"><i class="bi bi-search"></i></button>
+                <div class="nav-search-shell">
+                    <div class="input-group nav-search-input">
+                        <input type="text" class="form-control" id="search-input" placeholder="搜索用户...">
+                        <button class="btn btn-primary" id="search-btn"><i class="bi bi-search"></i></button>
+                    </div>
+                    <div id="searchHistoryPanel" class="search-history-panel" style="display:none;">
+                        <div class="search-history-panel__header">
+                            <span class="search-history-panel__title">最近搜索</span>
+                            <button type="button" class="search-history-panel__clear" id="searchHistoryClearBtn">清空</button>
+                        </div>
+                        <div id="searchHistoryList" class="search-history-list"></div>
+                        <div class="search-history-panel__footer">↑↓ 切换，Enter 搜索，Esc 关闭</div>
+                    </div>
                 </div>
                 <div class="input-group nav-link-input">
                     <input type="text" class="form-control" id="link-input" placeholder="粘贴抖音链接">
@@ -326,7 +336,10 @@
                             <div class="col-md-4">
                                 <div class="input-group input-group-sm">
                                     <span class="input-group-text"><i class="bi bi-search"></i></span>
-                                    <input type="text" class="form-control" id="myDownloadsSearch" placeholder="搜索文件名、作者..." oninput="filterMyDownloads()">
+                                    <input type="text" class="form-control" id="myDownloadsSearch" placeholder="搜索文件名、作者、路径，支持 author: / ext:" oninput="filterMyDownloads()">
+                                    <button class="btn btn-outline-secondary" type="button" id="myDownloadsSearchClearBtn" onclick="clearMyDownloadsSearch()" title="清空搜索">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
                                 </div>
                             </div>
                             <div class="col-md-2">
