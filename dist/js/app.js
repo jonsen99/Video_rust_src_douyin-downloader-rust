@@ -365,21 +365,18 @@ async function selectUser(secUid, nickname) {
 // ═══════════════════════════════════════════════
 function goBackToHome() {
     ['userDetailSection', 'userVideosSection', 'likedVideosSection', 'likedAuthorsSection', 'linkParseResult', 'recommendedFeedSection', 'myDownloadsSection'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.style.display = 'none';
+        hideSectionById(id);
     });
-    var emptyState = document.getElementById('emptyState');
-    if (emptyState) emptyState.style.display = '';
-    document.getElementById('back-btn').style.display = 'none';
+    revealSectionById('emptyState', 'flex');
+    setBackButtonVisible(false);
     currentUser = null;
     allVideos = [];
     isHomeView = true;
 }
 
 function showUserDetail(user) {
-    var emptyState = document.getElementById('emptyState');
-    if (emptyState) emptyState.style.display = 'none';
-    document.getElementById('back-btn').style.display = 'flex';
+    hideSectionById('emptyState');
+    setBackButtonVisible(true);
     var avatarUrl = user.avatar_larger || user.avatar_thumb || '/static/default-avatar.svg';
     document.getElementById('userAvatar').src = avatarUrl;
     document.getElementById('userAvatar').onerror = function () { this.src = '/static/default-avatar.svg'; };
@@ -390,7 +387,7 @@ function showUserDetail(user) {
     document.getElementById('userFollowerCount').textContent = formatNumber(user.follower_count || 0);
     document.getElementById('userFollowingCount').textContent = user.following_count != null ? formatNumber(user.following_count) : '-';
     document.getElementById('userTotalFavorited').textContent = formatNumber(user.total_favorited || 0);
-    document.getElementById('userDetailSection').style.display = 'block';
+    revealSectionById('userDetailSection');
 }
 
 // ═══════════════════════════════════════════════
@@ -404,7 +401,7 @@ function loadUserVideos() {
     _selectedVideos.clear();
     _selectMode = false;
 
-    document.getElementById('userVideosSection').style.display = 'block';
+    revealSectionById('userVideosSection');
     var videosList = document.getElementById('userVideosList');
     videosList.innerHTML = '';
     // Show skeleton loading placeholders
@@ -944,7 +941,7 @@ function showUserVideos(videos) {
     document.getElementById('userVideosList').innerHTML = '';
     displayVideos(videos, false);
     document.getElementById('videoCount').textContent = videos.length + ' 个作品';
-    document.getElementById('userVideosSection').style.display = 'block';
+    revealSectionById('userVideosSection');
 }
 
 function displayVideos(videos, append) {
@@ -1146,13 +1143,13 @@ function showParseResults(videos) {
             '<button class="btn btn-outline-info btn-sm" style="font-size:0.65rem;padding:1px 4px;" onclick="showVideoDetail(\'' + video.aweme_id + '\')">详情</button></div></div></div>';
         parsedVideosList.innerHTML += h;
     });
-    document.getElementById('linkParseResult').style.display = 'block';
-    document.getElementById('back-btn').style.display = 'flex';
+    revealSectionById('linkParseResult');
+    setBackButtonVisible(true);
     _hideEmptyState();
 }
 
 function clearParseResult() {
-    document.getElementById('linkParseResult').style.display = 'none';
+    hideSectionById('linkParseResult');
     document.getElementById('parsedVideosList').innerHTML = '';
     window.parsedVideosData = null;
 }
@@ -1384,7 +1381,7 @@ function displayLikedVideos(videos) {
         });
         videosList.appendChild(vc);
     });
-    section.style.display = 'block';
+    revealSectionById('likedVideosSection');
     _hideEmptyState();
 }
 
@@ -1414,7 +1411,7 @@ function displayLikedAuthors(authors) {
             '</div></div></div>';
         authorsList.appendChild(ac);
     });
-    section.style.display = 'block';
+    revealSectionById('likedAuthorsSection');
     _hideEmptyState();
 }
 

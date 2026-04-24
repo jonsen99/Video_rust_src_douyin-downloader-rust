@@ -25,17 +25,14 @@ function showMyDownloads() {
         'recommendedFeedSection'
     ];
     sections.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = 'none';
+        hideSectionById(id);
     });
 
     // 显示我的下载区域
-    const section = document.getElementById('myDownloadsSection');
-    if (section) section.style.display = 'block';
+    revealSectionById('myDownloadsSection');
 
     // 显示返回按钮
-    const backBtn = document.getElementById('back-btn');
-    if (backBtn) backBtn.style.display = 'flex';
+    setBackButtonVisible(true);
 
     // 加载数据
     refreshMyDownloads();

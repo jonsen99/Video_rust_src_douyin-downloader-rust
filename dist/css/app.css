@@ -30,6 +30,10 @@
     --radius-sm: 8px;
     --blur: blur(24px);
     --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    --motion-fast: 180ms;
+    --motion-base: 280ms;
+    --motion-slow: 440ms;
+    --motion-spring: cubic-bezier(0.22, 1, 0.36, 1);
     --shadow-sm: 0 2px 12px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.4);
     --shadow-glow: 0 0 40px var(--accent-glow);
@@ -229,6 +233,19 @@ body::before {
     background: rgba(255, 255, 255, 0.12);
     color: var(--text-primary);
     border-color: var(--glass-border-hover);
+}
+
+#back-btn.motion-managed {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.96);
+    transition:
+        opacity var(--motion-fast) ease,
+        transform var(--motion-fast) var(--motion-spring);
+}
+
+#back-btn.motion-managed.is-visible {
+    opacity: 1;
+    transform: translateX(0) scale(1);
 }
 
 /* Generic icon button (used in drawers, bottom bar, etc.) */
@@ -855,7 +872,6 @@ body::before {
     box-shadow: var(--shadow-sm);
     transition: var(--transition);
     overflow: hidden;
-    animation: cardReveal 0.5s ease-out both;
 }
 
 .card:hover {
@@ -1716,8 +1732,33 @@ textarea.form-control { resize: vertical; }
     overflow: hidden;
     backdrop-filter: var(--blur);
     -webkit-backdrop-filter: var(--blur);
-    animation: cardReveal 0.4s ease-out both;
 }
+
+.app-section {
+    will-change: opacity, transform;
+}
+
+.app-section.is-revealing > .section-panel,
+.empty-hero.app-section.is-revealing {
+    animation: sectionReveal var(--motion-slow) var(--motion-spring) both;
+}
+
+.empty-hero.app-section.is-revealing .empty-hero-icon,
+.empty-hero.app-section.is-revealing .empty-hero-title,
+.empty-hero.app-section.is-revealing .empty-hero-desc,
+.empty-hero.app-section.is-revealing .cookie-onboarding-card {
+    animation: sectionContentReveal var(--motion-base) ease both;
+    animation-delay: 70ms;
+}
+
+.empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card {
+    animation: shortcutReveal var(--motion-base) var(--motion-spring) both;
+}
+
+.empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card:nth-child(1) { animation-delay: 90ms; }
+.empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card:nth-child(2) { animation-delay: 130ms; }
+.empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card:nth-child(3) { animation-delay: 170ms; }
+.empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card:nth-child(4) { animation-delay: 210ms; }
 .section-panel-header {
     display: flex;
     align-items: center;
@@ -2167,6 +2208,39 @@ a:hover { color: var(--accent-hover); }
 @keyframes cardReveal {
     from { opacity: 0; transform: translateY(16px); }
     to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sectionReveal {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes sectionContentReveal {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes shortcutReveal {
+    from {
+        opacity: 0;
+        transform: translateY(18px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 
 .row > [class*="col-"]:nth-child(1) .card { animation-delay: 0s; }
@@ -3282,6 +3356,26 @@ a:hover { color: var(--accent-hover); }
 @keyframes fadeInOut {
     0%, 100% { opacity: 0.4; }
     50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #back-btn.motion-managed {
+        opacity: 1;
+        transform: none;
+        transition: none;
+    }
+
+    .app-section.is-revealing > .section-panel,
+    .empty-hero.app-section.is-revealing,
+    .app-section.is-revealing > .section-panel .section-panel-header,
+    .app-section.is-revealing > .section-panel .section-panel-body,
+    .empty-hero.app-section.is-revealing .empty-hero-icon,
+    .empty-hero.app-section.is-revealing .empty-hero-title,
+    .empty-hero.app-section.is-revealing .empty-hero-desc,
+    .empty-hero.app-section.is-revealing .cookie-onboarding-card,
+    .empty-hero.app-section.is-revealing .empty-hero-shortcuts .shortcut-card {
+        animation: none !important;
+    }
 }
 
 .player-nav-hint i {

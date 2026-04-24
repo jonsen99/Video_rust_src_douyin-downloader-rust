@@ -184,6 +184,5 @@ function setButtonLoading(btnId, isLoading, loadingText) {
 }
 
 function _hideEmptyState() {
-    const el = document.getElementById('emptyState');
-    if (el) el.style.display = 'none';
+    hideSectionById('emptyState');
 }

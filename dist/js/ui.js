@@ -165,6 +165,133 @@ function showToast(message, type) {
 // ═══════════════════════════════════════════════
 // SECTIONS
 // ═══════════════════════════════════════════════
+const APP_SECTION_IDS = [
+    'emptyState',
+    'userDetailSection',
+    'userVideosSection',
+    'likedVideosSection',
+    'likedAuthorsSection',
+    'linkParseResult',
+    'recommendedFeedSection',
+    'myDownloadsSection'
+];
+const APP_SECTION_DISPLAY = {
+    emptyState: 'flex'
+};
+const SECTION_REVEAL_DURATION_MS = 560;
+let _sectionMotionInitialized = false;
+
+function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+function ensureSectionMotionSetup() {
+    if (_sectionMotionInitialized) return;
+    _sectionMotionInitialized = true;
+
+    APP_SECTION_IDS.forEach(sectionId => {
+        const element = document.getElementById(sectionId);
+        if (element) element.classList.add('app-section');
+    });
+
+    const backBtn = document.getElementById('back-btn');
+    if (backBtn) backBtn.classList.add('motion-managed');
+}
+
+function clearSectionRevealState(element) {
+    if (!element) return;
+    if (element._revealTimer) {
+        clearTimeout(element._revealTimer);
+        element._revealTimer = null;
+    }
+    element.classList.remove('is-revealing');
+}
+
+function hideSectionById(sectionId) {
+    ensureSectionMotionSetup();
+    const element = document.getElementById(sectionId);
+    if (!element) return;
+    clearSectionRevealState(element);
+    element.style.display = 'none';
+}
+
+function revealSectionById(sectionId, displayMode) {
+    ensureSectionMotionSetup();
+    const element = document.getElementById(sectionId);
+    if (!element) return;
+
+    const resolvedDisplay = displayMode || APP_SECTION_DISPLAY[sectionId] || 'block';
+    const wasVisible = window.getComputedStyle(element).display !== 'none';
+    clearSectionRevealState(element);
+    element.style.display = resolvedDisplay;
+
+    if (prefersReducedMotion() || wasVisible) return;
+
+    requestAnimationFrame(() => {
+        element.classList.remove('is-revealing');
+        void element.offsetWidth;
+        element.classList.add('is-revealing');
+        element._revealTimer = setTimeout(() => {
+            element.classList.remove('is-revealing');
+            element._revealTimer = null;
+        }, SECTION_REVEAL_DURATION_MS);
+    });
+}
+
+function setBackButtonVisible(visible) {
+    ensureSectionMotionSetup();
+    const backBtn = document.getElementById('back-btn');
+    if (!backBtn) return;
+
+    if (backBtn._hideTimer) {
+        clearTimeout(backBtn._hideTimer);
+        backBtn._hideTimer = null;
+    }
+
+    if (visible) {
+        backBtn.style.display = 'flex';
+        if (prefersReducedMotion()) {
+            backBtn.classList.add('is-visible');
+            return;
+        }
+
+        requestAnimationFrame(() => {
+            backBtn.classList.add('is-visible');
+        });
+        return;
+    }
+
+    backBtn.classList.remove('is-visible');
+    if (prefersReducedMotion()) {
+        backBtn.style.display = 'none';
+        return;
+    }
+
+    backBtn._hideTimer = setTimeout(() => {
+        backBtn.style.display = 'none';
+        backBtn._hideTimer = null;
+    }, 180);
+}
+
+function initSectionMotion() {
+    ensureSectionMotionSetup();
+    const emptyState = document.getElementById('emptyState');
+    if (emptyState && window.getComputedStyle(emptyState).display !== 'none') {
+        revealSectionById('emptyState', 'flex');
+    }
+
+    const backBtn = document.getElementById('back-btn');
+    if (backBtn && window.getComputedStyle(backBtn).display !== 'none') {
+        backBtn.classList.add('is-visible');
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSectionMotion);
+} else {
+    initSectionMotion();
+}
+
 function hideAllSections(fromCache) {
     const sections = [
         'userDetailSection',
@@ -173,21 +300,16 @@ function hideAllSections(fromCache) {
         'likedAuthorsSection',
         'linkParseResult',
         'recommendedFeedSection',
-        'myDownloadsSection'  // 添加我的下载区域
+        'myDownloadsSection'
     ];
 
-    sections.forEach(sectionId => {
-        const element = document.getElementById(sectionId);
-        if (element) element.style.display = 'none';
-    });
+    sections.forEach(hideSectionById);
 
     // Show empty state
-    const emptyState = document.getElementById('emptyState');
-    if (emptyState) emptyState.style.display = 'flex';
+    revealSectionById('emptyState', 'flex');
 
     // Hide back button
-    const backBtn = document.getElementById('back-btn');
-    if (backBtn) backBtn.style.display = 'none';
+    setBackButtonVisible(false);
 
     const parsedVideosList = document.getElementById('parsedVideosList');
     if (parsedVideosList) parsedVideosList.textContent = '';

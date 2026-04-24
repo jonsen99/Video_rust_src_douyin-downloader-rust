@@ -195,27 +195,21 @@ function restoreRecommendedReturnState() {
     ];
 
     sectionIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = 'none';
+        hideSectionById(id);
     });
 
     if (recommendedReturnState && recommendedReturnState.visibleSections.length > 0) {
         recommendedReturnState.visibleSections.forEach(item => {
-            const el = document.getElementById(item.id);
-            if (el) el.style.display = item.display || (item.id === 'emptyState' ? 'flex' : 'block');
+            revealSectionById(item.id, item.display || (item.id === 'emptyState' ? 'flex' : 'block'));
         });
     } else {
-        const emptyState = document.getElementById('emptyState');
-        if (emptyState) emptyState.style.display = 'flex';
+        revealSectionById('emptyState', 'flex');
     }
 
-    const backBtn = document.getElementById('back-btn');
-    if (backBtn) {
-        if (recommendedReturnState && recommendedReturnState.backBtnVisible) {
-            backBtn.style.display = recommendedReturnState.backBtnDisplay || 'flex';
-        } else {
-            backBtn.style.display = 'none';
-        }
+    if (recommendedReturnState && recommendedReturnState.backBtnVisible) {
+        setBackButtonVisible(true);
+    } else {
+        setBackButtonVisible(false);
     }
 
     if (typeof isHomeView !== 'undefined') {
@@ -254,13 +248,12 @@ async function showRecommendedFeed() {
         ];
 
         sections.forEach(sectionId => {
-            const element = document.getElementById(sectionId);
-            if (element) element.style.display = 'none';
+            hideSectionById(sectionId);
         });
 
         // 显示推荐视频区域
         const section = document.getElementById('recommendedFeedSection');
-        section.style.display = 'block';
+        revealSectionById('recommendedFeedSection');
         console.log('[showRecommendedFeed] 区域显示状态:', section.style.display);
         ensureRecommendedFeedAutoLoad();
 
