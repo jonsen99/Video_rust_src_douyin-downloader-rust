@@ -7,6 +7,7 @@ console.log('[recommended.js] 文件已加载');
 let recommendedVideos = [];
 let recommendedCursor = 0;
 let hasMoreRecommended = false;
+let recommendedVideoIdSet = new Set();
 
 // 全屏播放器状态
 let currentPlayerIndex = 0;
@@ -83,6 +84,56 @@ function updateRecommendedLoadIndicator(state, text) {
     container.style.display = 'flex';
     container.classList.add(`is-${state}`);
     spinner.style.display = state === 'loading' ? 'inline-flex' : 'none';
+}
+
+function resetRecommendedFeedCache() {
+    recommendedVideos = [];
+    recommendedCursor = 0;
+    hasMoreRecommended = false;
+    recommendedVideoIdSet.clear();
+}
+
+function ensureRecommendedVideoIdSet() {
+    if (recommendedVideos.length === 0) {
+        if (recommendedVideoIdSet.size > 0) {
+            recommendedVideoIdSet.clear();
+        }
+        return;
+    }
+
+    if (recommendedVideoIdSet.size >= recommendedVideos.length) return;
+
+    recommendedVideoIdSet.clear();
+    recommendedVideos.forEach(video => {
+        if (video && video.aweme_id) {
+            recommendedVideoIdSet.add(String(video.aweme_id));
+        }
+    });
+}
+
+function appendUniqueRecommendedVideos(videos) {
+    if (!Array.isArray(videos) || videos.length === 0) return [];
+
+    ensureRecommendedVideoIdSet();
+
+    const appendedVideos = [];
+    videos.forEach(video => {
+        if (!video) return;
+
+        const awemeId = video.aweme_id ? String(video.aweme_id) : '';
+        if (awemeId && recommendedVideoIdSet.has(awemeId)) {
+            return;
+        }
+
+        if (awemeId) {
+            recommendedVideoIdSet.add(awemeId);
+        }
+
+        recommendedVideos.push(video);
+        appendedVideos.push(video);
+    });
+
+    return appendedVideos;
 }
 
 function disposeUnifiedVideoElement(videoEl) {
@@ -236,9 +287,7 @@ async function showRecommendedFeed() {
 
         // 如果没有数据，加载视频
         console.log('[showRecommendedFeed] 无缓存数据，开始加载');
-        recommendedVideos = [];
-        recommendedCursor = 0;
-        hasMoreRecommended = false;
+        resetRecommendedFeedCache();
         await loadRecommendedFeed(INITIAL_LOAD_COUNT);
     } finally {
         isInitializing = false;  // 重置标志位
@@ -247,9 +296,7 @@ async function showRecommendedFeed() {
 
 function closeRecommendedFeed() {
     restoreRecommendedReturnState();
-    recommendedVideos = [];
-    recommendedCursor = 0;
-    hasMoreRecommended = false;
+    resetRecommendedFeedCache();
     isInitializing = false;  // 重置初始化标志
     isLoadingMore = false;   // 重置加载标志
     updateRecommendedLoadIndicator('hidden');
@@ -286,14 +333,20 @@ async function loadRecommendedFeed(count = LOAD_MORE_COUNT) {
 
         if (data.success) {
             const previousCount = recommendedVideos.length;
-            const newVideos = data.videos || [];
-
-            // 合并新视频 - 使用push保持数组引用
-            newVideos.forEach(v => recommendedVideos.push(v));
+            const receivedVideos = Array.isArray(data.videos) ? data.videos : [];
+            const newVideos = appendUniqueRecommendedVideos(receivedVideos);
+            const duplicateCount = receivedVideos.length - newVideos.length;
             recommendedCursor = data.cursor;
             hasMoreRecommended = data.has_more;
 
-            console.log('[loadRecommendedFeed] 总视频数:', recommendedVideos.length, '新增:', newVideos.length);
+            console.log(
+                '[loadRecommendedFeed] 总视频数:',
+                recommendedVideos.length,
+                '新增:',
+                newVideos.length,
+                '去重跳过:',
+                duplicateCount
+            );
 
             // 如果播放器打开，更新播放器状态中的视频列表引用
             if (unifiedPlayerState.isOpen && unifiedPlayerState.source === 'recommended') {
@@ -322,9 +375,11 @@ async function loadRecommendedFeed(count = LOAD_MORE_COUNT) {
                 );
 
                 // 首屏列表不足一屏时允许继续补齐，但普通场景必须仍然接近底部才继续加载。
-                setTimeout(function() {
-                    maybeLoadMoreRecommendedFromList({ forceViewportFill: true });
-                }, 0);
+                if (newVideos.length > 0) {
+                    setTimeout(function() {
+                        maybeLoadMoreRecommendedFromList({ forceViewportFill: true });
+                    }, 0);
+                }
             } else {
                 console.log('[loadRecommendedFeed] 界面不可见或播放器模式，数据已缓存');
             }
@@ -645,9 +700,7 @@ async function refreshCurrentUnifiedVideoFromDetail() {
 }
 
 async function refreshRecommendedFeed() {
-    recommendedVideos = [];
-    recommendedCursor = 0;
-    hasMoreRecommended = false;
+    resetRecommendedFeedCache();
     setRecommendedFeedInlineStatus('正在获取视频中...', 'loading');
     updateRecommendedLoadIndicator('loading', '正在刷新推荐视频...');
     await loadRecommendedFeed(INITIAL_LOAD_COUNT);
@@ -764,9 +817,13 @@ function ensureRecommendedFeedAutoLoad() {
 
 function displayRecommendedVideos(videos) {
     const container = document.getElementById('recommendedFeedList');
+    if (!container || !Array.isArray(videos) || videos.length === 0) return;
+
+    const fragment = document.createDocumentFragment();
     videos.forEach(video => {
-        container.appendChild(createRecommendedVideoCard(video));
+        fragment.appendChild(createRecommendedVideoCard(video));
     });
+    container.appendChild(fragment);
 }
 
 function createRecommendedVideoCard(video) {
