@@ -126,7 +126,8 @@ impl AppConfig {
         }
 
         if let Some(proxy) = &self.proxy {
-            if !proxy.is_empty() && !proxy.starts_with("http://") && !proxy.starts_with("https://") {
+            if !proxy.is_empty() && !proxy.starts_with("http://") && !proxy.starts_with("https://")
+            {
                 anyhow::bail!("proxy must start with http:// or https://");
             }
         }
@@ -138,7 +139,10 @@ impl AppConfig {
             }
         }
 
-        if !matches!(self.download_quality.as_str(), "auto" | "highest" | "h264" | "smallest") {
+        if !matches!(
+            self.download_quality.as_str(),
+            "auto" | "highest" | "h264" | "smallest"
+        ) {
             anyhow::bail!(
                 "download_quality must be one of: auto, highest, h264, smallest, got {}",
                 self.download_quality
@@ -217,7 +221,10 @@ pub fn get_common_params() -> HashMap<String, String> {
 /// 通用请求头
 pub fn get_common_headers(cookie: &str) -> HashMap<String, String> {
     let mut headers = HashMap::new();
-    headers.insert("Accept".to_string(), "application/json, text/plain, */*".to_string());
+    headers.insert(
+        "Accept".to_string(),
+        "application/json, text/plain, */*".to_string(),
+    );
     headers.insert(
         "Accept-Language".to_string(),
         "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6".to_string(),

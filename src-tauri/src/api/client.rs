@@ -987,7 +987,8 @@ impl DouyinClient {
             }));
         }
 
-        let precise_search = keyword.starts_with('@') || keyword.chars().any(|ch| ch.is_ascii_digit());
+        let precise_search =
+            keyword.starts_with('@') || keyword.chars().any(|ch| ch.is_ascii_digit());
         let mut params = HashMap::new();
         params.insert("keyword", keyword.to_string());
         params.insert("search_channel", "aweme_user_web".to_string());
@@ -996,10 +997,7 @@ impl DouyinClient {
         params.insert("is_filter_search", "0".to_string());
         params.insert("from_group_id", "".to_string());
         params.insert("offset", "0".to_string());
-        params.insert(
-            "count",
-            if precise_search { "1" } else { "10" }.to_string(),
-        );
+        params.insert("count", if precise_search { "1" } else { "10" }.to_string());
         params.insert(
             "pc_search_top_1_params",
             "{\"enable_ai_search_top_1\":1}".to_string(),
@@ -1012,10 +1010,7 @@ impl DouyinClient {
             encoded_keyword
         );
         let mut headers = HashMap::new();
-        headers.insert(
-            "Referer".to_string(),
-            verify_url.clone(),
-        );
+        headers.insert("Referer".to_string(), verify_url.clone());
 
         let response = self
             .request_raw_json_with_options(

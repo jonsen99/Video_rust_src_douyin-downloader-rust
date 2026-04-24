@@ -80,8 +80,12 @@ mod tests {
     fn serializes_cookie_string() {
         use tauri::webview::Cookie;
         let cookies = vec![
-            Cookie::parse("sessionid=abc; Domain=.example.com").unwrap().into_owned(),
-            Cookie::parse("user=test; Domain=.example.com").unwrap().into_owned(),
+            Cookie::parse("sessionid=abc; Domain=.example.com")
+                .unwrap()
+                .into_owned(),
+            Cookie::parse("user=test; Domain=.example.com")
+                .unwrap()
+                .into_owned(),
         ];
         let cookie_str = serialize_cookie_string(&cookies);
         assert!(cookie_str.contains("sessionid=abc"));
@@ -92,19 +96,19 @@ mod tests {
     fn checks_login_cookie_presence() {
         use tauri::webview::Cookie;
 
-        let cookies = vec![
-            Cookie::parse("sessionid=abc; Domain=.example.com").unwrap().into_owned()
-        ];
+        let cookies = vec![Cookie::parse("sessionid=abc; Domain=.example.com")
+            .unwrap()
+            .into_owned()];
         assert!(has_douyin_login_cookie(&cookies));
 
-        let cookies = vec![
-            Cookie::parse("other=value; Domain=.example.com").unwrap().into_owned()
-        ];
+        let cookies = vec![Cookie::parse("other=value; Domain=.example.com")
+            .unwrap()
+            .into_owned()];
         assert!(!has_douyin_login_cookie(&cookies));
 
-        let cookies = vec![
-            Cookie::parse("passport_auth_status=1; Domain=.example.com").unwrap().into_owned()
-        ];
+        let cookies = vec![Cookie::parse("passport_auth_status=1; Domain=.example.com")
+            .unwrap()
+            .into_owned()];
         assert!(has_douyin_login_cookie(&cookies));
     }
 }

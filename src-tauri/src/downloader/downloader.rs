@@ -179,7 +179,10 @@ impl Downloader {
     }
 
     fn select_video_download_url(&self, video: &VideoInfo) -> Option<String> {
-        select_video_url(video, DownloadQuality::from_config(&self.config.download_quality))
+        select_video_url(
+            video,
+            DownloadQuality::from_config(&self.config.download_quality),
+        )
     }
 
     fn sanitize_author_dir(&self, author: &str) -> String {
@@ -675,8 +678,14 @@ impl Downloader {
         use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
         // 初始化取消和暂停标记
-        self.cancel_tokens.lock().await.insert(batch_task_id.clone(), false);
-        self.pause_tokens.lock().await.insert(batch_task_id.clone(), false);
+        self.cancel_tokens
+            .lock()
+            .await
+            .insert(batch_task_id.clone(), false);
+        self.pause_tokens
+            .lock()
+            .await
+            .insert(batch_task_id.clone(), false);
 
         // 创建视频队列
         let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoInfo>(32);
@@ -721,7 +730,8 @@ impl Downloader {
                     // 检查暂停
                     loop {
                         let is_paused = *pause_tokens.lock().await.get(&batch_id).unwrap_or(&false);
-                        let is_cancelled = *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        let is_cancelled =
+                            *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
                         if is_cancelled || !is_paused {
                             break;
                         }
@@ -729,7 +739,10 @@ impl Downloader {
                     }
 
                     // 获取一页视频
-                    match client.get_user_videos(&sec_uid_clone, cursor, page_size).await {
+                    match client
+                        .get_user_videos(&sec_uid_clone, cursor, page_size)
+                        .await
+                    {
                         Ok((videos, next_cursor, more)) => {
                             has_more = more;
                             cursor = next_cursor;
@@ -768,7 +781,10 @@ impl Downloader {
 
                 // 标记获取完成
                 drop(video_tx);
-                log::info!("Fetch task completed, discovered {} videos", total_discovered.load(AtomicOrdering::SeqCst));
+                log::info!(
+                    "Fetch task completed, discovered {} videos",
+                    total_discovered.load(AtomicOrdering::SeqCst)
+                );
             })
         };
 
@@ -803,7 +819,8 @@ impl Downloader {
                     // 检查暂停
                     loop {
                         let is_paused = *pause_tokens.lock().await.get(&batch_id).unwrap_or(&false);
-                        let is_cancelled = *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
+                        let is_cancelled =
+                            *cancel_tokens.lock().await.get(&batch_id).unwrap_or(&false);
                         if is_cancelled || !is_paused {
                             break;
                         }
@@ -838,7 +855,8 @@ impl Downloader {
                         if downloaded.contains(&video.aweme_id) {
                             skipped.fetch_add(1, AtomicOrdering::SeqCst);
                             let current = completed.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-                            let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+                            let total =
+                                total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
 
                             // 发送进度（跳过的不显示消息）
                             emit_event(
@@ -885,7 +903,8 @@ impl Downloader {
                             pause_tokens.clone(),
                             batch_id.clone(),
                             progress_tx.clone(),
-                        ).await;
+                        )
+                        .await;
 
                         drop(permit);
 
@@ -894,7 +913,8 @@ impl Downloader {
                         match result {
                             Ok(_) => {
                                 let current = completed.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-                                let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+                                let total =
+                                    total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
 
                                 // 计算速度
                                 let speed_mbps = if elapsed.as_secs() > 0 {
@@ -921,7 +941,8 @@ impl Downloader {
                                 log::error!("Download error for {}: {}", aweme_id, e);
 
                                 let current = completed.load(AtomicOrdering::SeqCst);
-                                let total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
+                                let total =
+                                    total_discovered.load(AtomicOrdering::SeqCst).max(estimated);
 
                                 emit_event(
                                     &progress_tx,
@@ -957,11 +978,18 @@ impl Downloader {
         }
 
         // 发送完成事件
-        let was_cancelled = *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+        let was_cancelled = *self
+            .cancel_tokens
+            .lock()
+            .await
+            .get(&batch_task_id)
+            .unwrap_or(&false);
         let final_completed = completed_count.load(AtomicOrdering::SeqCst);
         let final_skipped = skipped_count.load(AtomicOrdering::SeqCst);
         let final_failed = failed_count.load(AtomicOrdering::SeqCst);
-        let final_total = total_discovered.load(AtomicOrdering::SeqCst).max(estimated_total);
+        let final_total = total_discovered
+            .load(AtomicOrdering::SeqCst)
+            .max(estimated_total);
 
         if was_cancelled {
             emit_event(
@@ -971,7 +999,8 @@ impl Downloader {
                     "task_id": batch_task_id,
                     "message": format!("下载已取消，已完成 {} 个视频", final_completed)
                 }),
-            ).await;
+            )
+            .await;
         } else {
             emit_event(
                 &self.progress_tx,
@@ -1034,13 +1063,19 @@ impl Downloader {
                 "progress": 0,
                 "speed_bps": 0
             }),
-        ).await;
+        )
+        .await;
 
         let start_time = Instant::now();
 
         for (index, media) in media_urls.iter().enumerate() {
             // 检查取消
-            if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+            if *cancel_tokens
+                .lock()
+                .await
+                .get(&batch_task_id)
+                .unwrap_or(&false)
+            {
                 for f in &downloaded_files {
                     let _ = tokio::fs::remove_file(f).await;
                 }
@@ -1049,8 +1084,16 @@ impl Downloader {
 
             // 检查暂停
             loop {
-                let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
-                let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                let is_paused = *pause_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false);
+                let is_cancelled = *cancel_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false);
                 if is_cancelled || !is_paused {
                     break;
                 }
@@ -1068,7 +1111,11 @@ impl Downloader {
             }
 
             let content_length = response.content_length().unwrap_or(0);
-            let ext = if media.r#type == "image" { "jpg" } else { "mp4" };
+            let ext = if media.r#type == "image" {
+                "jpg"
+            } else {
+                "mp4"
+            };
             let file_name = if total_files == 1 {
                 format!("{}.{}", filename, ext)
             } else {
@@ -1083,7 +1130,12 @@ impl Downloader {
 
             while let Some(chunk_result) = stream.next().await {
                 // 检查取消
-                if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                if *cancel_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false)
+                {
                     let _ = tokio::fs::remove_file(&file_path).await;
                     for f in &downloaded_files {
                         let _ = tokio::fs::remove_file(f).await;
@@ -1093,8 +1145,16 @@ impl Downloader {
 
                 // 检查暂停
                 loop {
-                    let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
-                    let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    let is_paused = *pause_tokens
+                        .lock()
+                        .await
+                        .get(&batch_task_id)
+                        .unwrap_or(&false);
+                    let is_cancelled = *cancel_tokens
+                        .lock()
+                        .await
+                        .get(&batch_task_id)
+                        .unwrap_or(&false);
                     if is_cancelled || !is_paused {
                         break;
                     }
@@ -1126,7 +1186,8 @@ impl Downloader {
                             "progress": progress,
                             "speed_bps": speed_bps
                         }),
-                    ).await;
+                    )
+                    .await;
 
                     last_emit = Instant::now();
                 }
@@ -1149,7 +1210,8 @@ impl Downloader {
                 "progress": 100,
                 "speed_bps": speed_bps
             }),
-        ).await;
+        )
+        .await;
 
         // 保存到历史
         if let Some(first_file) = downloaded_files.first() {
@@ -1241,8 +1303,14 @@ impl Downloader {
         }
 
         // 初始化取消和暂停标记
-        self.cancel_tokens.lock().await.insert(batch_task_id.clone(), false);
-        self.pause_tokens.lock().await.insert(batch_task_id.clone(), false);
+        self.cancel_tokens
+            .lock()
+            .await
+            .insert(batch_task_id.clone(), false);
+        self.pause_tokens
+            .lock()
+            .await
+            .insert(batch_task_id.clone(), false);
 
         // 发送批量下载开始事件
         emit_event(
@@ -1268,7 +1336,13 @@ impl Downloader {
 
         for (_index, video) in videos.into_iter().enumerate() {
             // 检查取消
-            if *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+            if *self
+                .cancel_tokens
+                .lock()
+                .await
+                .get(&batch_task_id)
+                .unwrap_or(&false)
+            {
                 break;
             }
 
@@ -1330,7 +1404,10 @@ impl Downloader {
             let task = DownloadTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 aweme_id: video.aweme_id.clone(),
-                url: media_urls.first().map(|item| item.url.clone()).unwrap_or_default(),
+                url: media_urls
+                    .first()
+                    .map(|item| item.url.clone())
+                    .unwrap_or_default(),
                 media_urls: media_urls.clone(),
                 title: video.desc.clone(),
                 author: video.author.nickname.clone(),
@@ -1372,7 +1449,8 @@ impl Downloader {
                     total_videos,
                     completed.clone(),
                     display_name,
-                ).await;
+                )
+                .await;
 
                 drop(permit);
 
@@ -1402,7 +1480,8 @@ impl Downloader {
                                 "message": format!("下载失败 {}: {}", display_name_for_log, e),
                                 "level": "error"
                             }),
-                        ).await;
+                        )
+                        .await;
                     }
                 }
             });
@@ -1414,7 +1493,12 @@ impl Downloader {
         futures::future::join_all(download_handles).await;
 
         // 检查是否被取消
-        let was_cancelled = *self.cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+        let was_cancelled = *self
+            .cancel_tokens
+            .lock()
+            .await
+            .get(&batch_task_id)
+            .unwrap_or(&false);
 
         let final_completed = completed_count.load(AtomicOrdering::SeqCst);
         let final_skipped = skipped_count.load(AtomicOrdering::SeqCst);
@@ -1428,7 +1512,8 @@ impl Downloader {
                     "task_id": batch_task_id,
                     "message": format!("下载已取消，已完成 {} 个视频", final_completed)
                 }),
-            ).await;
+            )
+            .await;
         } else {
             emit_event(
                 &self.progress_tx,
@@ -1468,7 +1553,10 @@ impl Downloader {
     ) -> Result<()> {
         let task = {
             let tasks_lock = tasks.lock().await;
-            tasks_lock.iter().find(|t| t.id == task_id).cloned()
+            tasks_lock
+                .iter()
+                .find(|t| t.id == task_id)
+                .cloned()
                 .ok_or_else(|| anyhow!("Task not found"))?
         };
 
@@ -1498,11 +1586,17 @@ impl Downloader {
                 "progress": 0,
                 "speed_bps": 0
             }),
-        ).await;
+        )
+        .await;
 
         for (index, media) in task.media_urls.iter().enumerate() {
             // 检查取消
-            if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+            if *cancel_tokens
+                .lock()
+                .await
+                .get(&batch_task_id)
+                .unwrap_or(&false)
+            {
                 for f in &downloaded_files {
                     let _ = tokio::fs::remove_file(f).await;
                 }
@@ -1511,8 +1605,16 @@ impl Downloader {
 
             // 检查暂停
             loop {
-                let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
-                let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                let is_paused = *pause_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false);
+                let is_cancelled = *cancel_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false);
                 if is_cancelled || !is_paused {
                     break;
                 }
@@ -1546,7 +1648,12 @@ impl Downloader {
 
             while let Some(chunk_result) = stream.next().await {
                 // 检查取消
-                if *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false) {
+                if *cancel_tokens
+                    .lock()
+                    .await
+                    .get(&batch_task_id)
+                    .unwrap_or(&false)
+                {
                     let _ = tokio::fs::remove_file(&file_path).await;
                     for f in &downloaded_files {
                         let _ = tokio::fs::remove_file(f).await;
@@ -1556,8 +1663,16 @@ impl Downloader {
 
                 // 检查暂停
                 loop {
-                    let is_paused = *pause_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
-                    let is_cancelled = *cancel_tokens.lock().await.get(&batch_task_id).unwrap_or(&false);
+                    let is_paused = *pause_tokens
+                        .lock()
+                        .await
+                        .get(&batch_task_id)
+                        .unwrap_or(&false);
+                    let is_cancelled = *cancel_tokens
+                        .lock()
+                        .await
+                        .get(&batch_task_id)
+                        .unwrap_or(&false);
                     if is_cancelled || !is_paused {
                         break;
                     }
@@ -1589,7 +1704,8 @@ impl Downloader {
                             "progress": progress,
                             "speed_bps": speed_bps
                         }),
-                    ).await;
+                    )
+                    .await;
 
                     last_emit = Instant::now();
                 }
@@ -1647,7 +1763,8 @@ impl Downloader {
                 "progress": 100,
                 "speed_bps": speed_bps
             }),
-        ).await;
+        )
+        .await;
 
         Ok(())
     }
@@ -1756,7 +1873,10 @@ async fn emit_event(
 fn build_download_headers(config: &AppConfig) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
-    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity;q=1, *;q=0"));
+    headers.insert(
+        ACCEPT_ENCODING,
+        HeaderValue::from_static("identity;q=1, *;q=0"),
+    );
     headers.insert(RANGE, HeaderValue::from_static("bytes=0-"));
     headers.insert(REFERER, HeaderValue::from_static("https://www.douyin.com/"));
     headers.insert(USER_AGENT, HeaderValue::from_static(get_user_agent()));
@@ -1876,10 +1996,7 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
         DownloadQuality::Auto => download_addr.or(h264_best).or(highest_metric).or(first),
         DownloadQuality::Highest => download_addr.or(highest_metric).or(first),
         DownloadQuality::H264 => h264_best.or(download_addr).or(highest_metric).or(first),
-        DownloadQuality::Smallest => lowbr
-            .or(smallest_metric)
-            .or(h264_best)
-            .or(first),
+        DownloadQuality::Smallest => lowbr.or(smallest_metric).or(h264_best).or(first),
     };
 
     selected.map(|c| c.url.clone())

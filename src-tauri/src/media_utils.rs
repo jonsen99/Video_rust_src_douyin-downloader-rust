@@ -389,7 +389,9 @@ pub fn media_type_from_payload_or_items(
         };
     }
 
-    let has_live = items.iter().any(|item| item.r#type == MEDIA_TYPE_LIVE_PHOTO);
+    let has_live = items
+        .iter()
+        .any(|item| item.r#type == MEDIA_TYPE_LIVE_PHOTO);
     let has_image = items.iter().any(|item| item.r#type == MEDIA_TYPE_IMAGE);
 
     if has_live && has_image {
@@ -406,9 +408,12 @@ pub fn media_type_from_payload_or_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{VideoData, Statistics, Status, AuthorInfo};
+    use crate::api::{AuthorInfo, Statistics, Status, VideoData};
 
-    fn sample_video_with_images(image_urls: Vec<String>, live_photo_urls: Vec<String>) -> VideoInfo {
+    fn sample_video_with_images(
+        image_urls: Vec<String>,
+        live_photo_urls: Vec<String>,
+    ) -> VideoInfo {
         let is_image = !image_urls.is_empty();
         let has_live_photo = !live_photo_urls.is_empty();
         VideoInfo {
@@ -417,7 +422,11 @@ mod tests {
             create_time: 0,
             author: AuthorInfo::default(),
             video: VideoData {
-                play_addr: if !is_image && !has_live_photo { "https://example.com/play".to_string() } else { "".to_string() },
+                play_addr: if !is_image && !has_live_photo {
+                    "https://example.com/play".to_string()
+                } else {
+                    "".to_string()
+                },
                 ..Default::default()
             },
             statistics: Statistics::default(),
@@ -438,18 +447,33 @@ mod tests {
         assert_eq!(normalize_duration_seconds(0), 0);
         assert_eq!(normalize_duration_seconds(-5), 0);
         assert_eq!(normalize_duration_seconds(50), 50);
-        assert_eq!(normalize_duration_seconds(500), 5);   // /100
+        assert_eq!(normalize_duration_seconds(500), 5); // /100
         assert_eq!(normalize_duration_seconds(5_000), 5); // /1000
         assert_eq!(normalize_duration_seconds(500_000), 5); // /100000
     }
 
     #[test]
     fn infers_media_types_from_url() {
-        assert_eq!(infer_download_item_type("https://example.com/test.mp3", "video"), "audio");
-        assert_eq!(infer_download_item_type("https://example.com/test.jpg", "video"), "image");
-        assert_eq!(infer_download_item_type("https://example.com/test.png", "video"), "image");
-        assert_eq!(infer_download_item_type("https://example.com/play", "video"), "video");
-        assert_eq!(infer_download_item_type("https://example.com/image/v1", "video"), "image");
+        assert_eq!(
+            infer_download_item_type("https://example.com/test.mp3", "video"),
+            "audio"
+        );
+        assert_eq!(
+            infer_download_item_type("https://example.com/test.jpg", "video"),
+            "image"
+        );
+        assert_eq!(
+            infer_download_item_type("https://example.com/test.png", "video"),
+            "image"
+        );
+        assert_eq!(
+            infer_download_item_type("https://example.com/play", "video"),
+            "video"
+        );
+        assert_eq!(
+            infer_download_item_type("https://example.com/image/v1", "video"),
+            "image"
+        );
     }
 
     #[test]
@@ -469,18 +493,53 @@ mod tests {
 
     #[test]
     fn resolves_media_type_from_payload_or_items() {
-        assert_eq!(media_type_from_payload_or_items("image", &[]), MediaType::Image);
-        assert_eq!(media_type_from_payload_or_items("live_photo", &[]), MediaType::LivePhoto);
-        assert_eq!(media_type_from_payload_or_items("mixed", &[]), MediaType::Mixed);
-        assert_eq!(media_type_from_payload_or_items("", &[
-            DownloadMediaItem { r#type: "image".into(), url: "".into() }
-        ]), MediaType::Image);
-        assert_eq!(media_type_from_payload_or_items("", &[
-            DownloadMediaItem { r#type: "live_photo".into(), url: "".into() }
-        ]), MediaType::LivePhoto);
-        assert_eq!(media_type_from_payload_or_items("", &[
-            DownloadMediaItem { r#type: "live_photo".into(), url: "".into() },
-            DownloadMediaItem { r#type: "image".into(), url: "".into() }
-        ]), MediaType::Mixed);
+        assert_eq!(
+            media_type_from_payload_or_items("image", &[]),
+            MediaType::Image
+        );
+        assert_eq!(
+            media_type_from_payload_or_items("live_photo", &[]),
+            MediaType::LivePhoto
+        );
+        assert_eq!(
+            media_type_from_payload_or_items("mixed", &[]),
+            MediaType::Mixed
+        );
+        assert_eq!(
+            media_type_from_payload_or_items(
+                "",
+                &[DownloadMediaItem {
+                    r#type: "image".into(),
+                    url: "".into()
+                }]
+            ),
+            MediaType::Image
+        );
+        assert_eq!(
+            media_type_from_payload_or_items(
+                "",
+                &[DownloadMediaItem {
+                    r#type: "live_photo".into(),
+                    url: "".into()
+                }]
+            ),
+            MediaType::LivePhoto
+        );
+        assert_eq!(
+            media_type_from_payload_or_items(
+                "",
+                &[
+                    DownloadMediaItem {
+                        r#type: "live_photo".into(),
+                        url: "".into()
+                    },
+                    DownloadMediaItem {
+                        r#type: "image".into(),
+                        url: "".into()
+                    }
+                ]
+            ),
+            MediaType::Mixed
+        );
     }
 }

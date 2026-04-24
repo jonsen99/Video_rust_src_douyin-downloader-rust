@@ -11,7 +11,10 @@ pub mod sign;
 
 use api::{CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
 use config::AppConfig;
-use cookie::{CookieLoginSession, has_douyin_login_cookie, parse_cookie_string, serialize_cookie_string, verify_douyin_login_cookie};
+use cookie::{
+    has_douyin_login_cookie, parse_cookie_string, serialize_cookie_string,
+    verify_douyin_login_cookie, CookieLoginSession,
+};
 use downloader::{Downloader, DownloaderEvent};
 use history::HistoryManager;
 use media_utils::*;
@@ -157,8 +160,7 @@ async fn open_verify_browser(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("https://www.douyin.com/");
-    let target_url =
-        Url::parse(requested_url).map_err(|error| format!("URL 无效: {}", error))?;
+    let target_url = Url::parse(requested_url).map_err(|error| format!("URL 无效: {}", error))?;
 
     if let Some(window) = app.get_webview_window("verify-browser") {
         let _ = window.set_focus();
@@ -327,25 +329,28 @@ async fn cookie_browser_login(
                         .into_iter()
                         .filter(|cookie| {
                             let name = cookie.name();
-                            cookie.domain().map(|domain| {
-                                domain.contains("douyin.com")
-                                    || domain.contains("amemv.com")
-                                    || domain.contains("bytedance.com")
-                                    || domain.contains("snssdk.com")
-                            }).unwrap_or_else(|| {
-                                matches!(
-                                    name,
-                                    "sessionid"
-                                        | "sessionid_ss"
-                                        | "sid_guard"
-                                        | "uid_tt"
-                                        | "passport_csrf_token"
-                                        | "passport_auth_status"
-                                        | "ttwid"
-                                        | "msToken"
-                                        | "s_v_web_id"
-                                )
-                            })
+                            cookie
+                                .domain()
+                                .map(|domain| {
+                                    domain.contains("douyin.com")
+                                        || domain.contains("amemv.com")
+                                        || domain.contains("bytedance.com")
+                                        || domain.contains("snssdk.com")
+                                })
+                                .unwrap_or_else(|| {
+                                    matches!(
+                                        name,
+                                        "sessionid"
+                                            | "sessionid_ss"
+                                            | "sid_guard"
+                                            | "uid_tt"
+                                            | "passport_csrf_token"
+                                            | "passport_auth_status"
+                                            | "ttwid"
+                                            | "msToken"
+                                            | "s_v_web_id"
+                                    )
+                                })
                         })
                         .collect();
                     let cookie_string = serialize_cookie_string(&cookies);
@@ -985,7 +990,8 @@ async fn download_video(
     let mut media_urls = parse_download_media_items(&video, &raw_media_type);
     let mut media_type = media_type_from_payload_or_items(&raw_media_type, &media_urls);
 
-    if (media_urls.is_empty() || desc.is_empty() || author_name.is_empty()) && !aweme_id.is_empty() {
+    if (media_urls.is_empty() || desc.is_empty() || author_name.is_empty()) && !aweme_id.is_empty()
+    {
         if let Ok(client) = get_client(&state).await {
             if let Ok(fresh_video) = client.get_video_detail(&aweme_id).await {
                 if desc.is_empty() {
@@ -1106,16 +1112,21 @@ async fn download_user_videos(
     let client_clone = client.clone();
     let downloader_clone = downloader.clone();
 
-    downloader.emit_batch_started(&batch_id, &nickname, total_videos).await;
+    downloader
+        .emit_batch_started(&batch_id, &nickname, total_videos)
+        .await;
 
     tokio::spawn(async move {
-        if let Err(e) = downloader_clone.start_streaming_download(
-            client_clone,
-            sec_uid_clone,
-            batch_id,
-            nickname_clone,
-            total_videos,
-        ).await {
+        if let Err(e) = downloader_clone
+            .start_streaming_download(
+                client_clone,
+                sec_uid_clone,
+                batch_id,
+                nickname_clone,
+                total_videos,
+            )
+            .await
+        {
             log::error!("Streaming download error: {}", e);
         }
     });
@@ -1182,7 +1193,10 @@ async fn download_liked_videos(
         let videos_clone = videos.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = downloader_clone.start_batch_download(videos_clone, batch_task_id_clone, "点赞视频".to_string()).await {
+            if let Err(e) = downloader_clone
+                .start_batch_download(videos_clone, batch_task_id_clone, "点赞视频".to_string())
+                .await
+            {
                 log::error!("Batch download error: {}", e);
             }
         });
@@ -1514,7 +1528,9 @@ mod tests {
     #[test]
     fn resolves_download_media_type_from_string_and_numeric_payloads() {
         assert_eq!(
-            download_media_type_from_payload(&serde_json::json!({ "raw_media_type": "live_photo" })),
+            download_media_type_from_payload(
+                &serde_json::json!({ "raw_media_type": "live_photo" })
+            ),
             "live_photo"
         );
         assert_eq!(
