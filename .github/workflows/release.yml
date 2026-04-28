@@ -238,7 +238,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          gh release download "$VERSION" --pattern latest.json --output latest.json
+          gh release download "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --pattern latest.json \
+            --output latest.json
 
           APP_VERSION="${VERSION#v}"
           jq -e --arg version "$APP_VERSION" '
@@ -257,4 +260,6 @@ jobs:
             cp latest.json "$target.json"
           done
 
-          gh release upload "$VERSION" darwin.json windows.json linux.json --clobber
+          gh release upload "$VERSION" darwin.json windows.json linux.json \
+            --repo "${{ github.repository }}" \
+            --clobber
