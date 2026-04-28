@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["app", "dmg", "nsis", "deb", "appimage"],
     "icon": [
       "icons/32x32.png",
@@ -56,7 +57,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/anYuJia/douyin-downloader-rust/releases/latest/download/{{target}}.json"
+        "https://github.com/anYuJia/douyin-downloader-rust/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZEM0QzRUE5RDAyQjlEQjgKUldTNG5TdlFxVDQ5L2RFcVIydi9xU1YzUVhLb1lwWmRZTlc3V1NQOEIrSDZNenIraTRTZ1NFeU8K",
       "dialog": false

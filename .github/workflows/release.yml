@@ -53,6 +53,7 @@ jobs:
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: false
           prerelease: false
+          retryAttempts: 5
           args: --target ${{ matrix.target }} -b app -b dmg
 
       - name: Package portable macOS zip
@@ -113,6 +114,7 @@ jobs:
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: false
           prerelease: false
+          retryAttempts: 5
           args: --target x86_64-pc-windows-msvc -b nsis
 
   build-windows-portable:
@@ -217,4 +219,42 @@ jobs:
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: false
           prerelease: false
+          retryAttempts: 5
           args: --target x86_64-unknown-linux-gnu -b deb -b appimage
+
+  finalize-updater:
+    runs-on: ubuntu-latest
+    needs:
+      - build-macos
+      - build-windows-installer
+      - build-linux
+    permissions:
+      contents: write
+    steps:
+      - name: Verify and publish updater metadata aliases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          gh release download "$VERSION" --pattern latest.json --output latest.json
+
+          APP_VERSION="${VERSION#v}"
+          jq -e --arg version "$APP_VERSION" '
+            .version == $version and
+            (.platforms["darwin-aarch64"].signature | length > 0) and
+            (.platforms["darwin-aarch64"].url | length > 0) and
+            (.platforms["darwin-x86_64"].signature | length > 0) and
+            (.platforms["darwin-x86_64"].url | length > 0) and
+            (.platforms["windows-x86_64"].signature | length > 0) and
+            (.platforms["windows-x86_64"].url | length > 0) and
+            (.platforms["linux-x86_64"].signature | length > 0) and
+            (.platforms["linux-x86_64"].url | length > 0)
+          ' latest.json
+
+          for target in darwin windows linux; do
+            cp latest.json "$target.json"
+          done
+
+          gh release upload "$VERSION" darwin.json windows.json linux.json --clobber
