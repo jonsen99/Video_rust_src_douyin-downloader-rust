@@ -508,6 +508,23 @@ async function openMyDownloadsLocation(encodedPath) {
     }
 }
 
+// 打开下载目录
+async function openMyDownloadsDirectory() {
+    try {
+        const response = await fetch('/api/download_history/open_directory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+        if (!result.success) {
+            throw new Error(result.message || '打开失败');
+        }
+        showToast('已打开下载目录', 'success');
+    } catch (error) {
+        showToast(error.message || '打开失败', 'error');
+    }
+}
+
 // 删除文件
 async function deleteMyDownloadsFile(encodedPath) {
     const path = decodeURIComponent(encodedPath);

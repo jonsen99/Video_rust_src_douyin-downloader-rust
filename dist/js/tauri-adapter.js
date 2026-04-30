@@ -464,6 +464,7 @@
             path !== '/api/download_history' &&
             path !== '/api/download_history/delete' &&
             path !== '/api/download_history/open' &&
+            path !== '/api/download_history/open_directory' &&
             path !== '/api/download_history/open_location' &&
             path !== '/api/get_app_version' &&
             path !== '/api/check_update' &&
@@ -744,9 +745,28 @@
             };
         }
 
-        if (path === '/api/download_history/open' || path === '/api/download_history/open_location') {
+        if (path === '/api/download_history/open') {
             const targetPath = body.path || body.file_path || '';
-            await invoke('open_file_location', { path: targetPath });
+            if (targetPath) {
+                await invoke('open_file', { path: targetPath });
+            } else {
+                await invoke('open_download_directory');
+            }
+            return { success: true };
+        }
+
+        if (path === '/api/download_history/open_location') {
+            const targetPath = body.path || body.file_path || '';
+            if (targetPath) {
+                await invoke('open_file_location', { path: targetPath });
+            } else {
+                await invoke('open_download_directory');
+            }
+            return { success: true };
+        }
+
+        if (path === '/api/download_history/open_directory') {
+            await invoke('open_download_directory');
             return { success: true };
         }
 

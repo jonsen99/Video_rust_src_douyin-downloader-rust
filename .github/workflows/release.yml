@@ -171,12 +171,27 @@ jobs:
           Copy-Item $exePath $dest
           Write-Output "Created: $dest"
 
+      - name: Sign portable exe
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $portable = Get-ChildItem -Path . -Filter "Douyin-Downloader_*_x64_portable.exe" -File | Select-Object -First 1
+          if (-not $portable) {
+            Write-Error "Could not find portable exe to sign"
+            exit 1
+          }
+          cargo tauri signer sign $portable.FullName
+
       - name: Upload portable exe to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
-          files: Douyin-Downloader_*_x64_portable.exe
+          files: |
+            Douyin-Downloader_*_x64_portable.exe
+            Douyin-Downloader_*_x64_portable.exe.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -227,6 +242,7 @@ jobs:
     needs:
       - build-macos
       - build-windows-installer
+      - build-windows-portable
       - build-linux
     permissions:
       contents: write
@@ -258,6 +274,7 @@ jobs:
           DARWIN_ARM_SIG="$(read_sig 'Douyin.Downloader_aarch64.app.tar.gz')"
           DARWIN_X64_SIG="$(read_sig 'Douyin.Downloader_x64.app.tar.gz')"
           WINDOWS_SIG="$(read_sig "Douyin.Downloader_${APP_VERSION}_x64-setup.exe")"
+          WINDOWS_PORTABLE_SIG="$(read_sig "Douyin-Downloader_${APP_VERSION}_x64_portable.exe")"
           LINUX_APPIMAGE_SIG="$(read_sig "Douyin.Downloader_${APP_VERSION}_amd64.AppImage")"
           LINUX_DEB_SIG="$(read_sig "Douyin.Downloader_${APP_VERSION}_amd64.deb")"
 
@@ -271,6 +288,8 @@ jobs:
             --arg darwin_x64_url "$BASE_URL/Douyin.Downloader_x64.app.tar.gz" \
             --arg windows_sig "$WINDOWS_SIG" \
             --arg windows_url "$BASE_URL/Douyin.Downloader_${APP_VERSION}_x64-setup.exe" \
+            --arg windows_portable_sig "$WINDOWS_PORTABLE_SIG" \
+            --arg windows_portable_url "$BASE_URL/Douyin-Downloader_${APP_VERSION}_x64_portable.exe" \
             --arg linux_appimage_sig "$LINUX_APPIMAGE_SIG" \
             --arg linux_appimage_url "$BASE_URL/Douyin.Downloader_${APP_VERSION}_amd64.AppImage" \
             --arg linux_deb_sig "$LINUX_DEB_SIG" \
@@ -286,6 +305,7 @@ jobs:
                 "darwin-x86_64-app": { signature: $darwin_x64_sig, url: $darwin_x64_url },
                 "windows-x86_64": { signature: $windows_sig, url: $windows_url },
                 "windows-x86_64-nsis": { signature: $windows_sig, url: $windows_url },
+                "windows-x86_64-portable": { signature: $windows_portable_sig, url: $windows_portable_url },
                 "linux-x86_64": { signature: $linux_appimage_sig, url: $linux_appimage_url },
                 "linux-x86_64-appimage": { signature: $linux_appimage_sig, url: $linux_appimage_url },
                 "linux-x86_64-deb": { signature: $linux_deb_sig, url: $linux_deb_url }
@@ -302,6 +322,8 @@ jobs:
             (.platforms["darwin-x86_64"].url | length > 0) and
             (.platforms["windows-x86_64"].signature | length > 0) and
             (.platforms["windows-x86_64"].url | length > 0) and
+            (.platforms["windows-x86_64-portable"].signature | length > 0) and
+            (.platforms["windows-x86_64-portable"].url | length > 0) and
             (.platforms["linux-x86_64"].signature | length > 0) and
             (.platforms["linux-x86_64"].url | length > 0)
           ' latest.json

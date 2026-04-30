@@ -1597,6 +1597,15 @@ function initUpdateChecker() {
     }, 3000);
 }
 
+function formatUpdateVersion(value) {
+    if (value === null || value === undefined || value === '') {
+        return '未知';
+    }
+
+    const text = String(value);
+    return text.charAt(0).toLowerCase() === 'v' ? text : 'v' + text;
+}
+
 function checkForUpdates(showNoUpdateToast) {
     const statusEl = document.getElementById('update-status');
     const modal = new bootstrap.Modal(document.getElementById('updateModal'));
@@ -1619,11 +1628,14 @@ function checkForUpdates(showNoUpdateToast) {
                 const downloadBtn = document.getElementById('update-download-btn');
                 const restartBtn = document.getElementById('update-restart-btn');
 
+                const currentVersion = result.current_version || result.currentVersion || result.current || '';
+                const newVersion = result.version || result.latest_version || result.latestVersion || '';
+
                 if (currentVersionEl) {
-                    currentVersionEl.textContent = 'v' + (result.current_version || '');
+                    currentVersionEl.textContent = formatUpdateVersion(currentVersion);
                 }
                 if (newVersionEl) {
-                    newVersionEl.textContent = 'v' + (result.version || '');
+                    newVersionEl.textContent = formatUpdateVersion(newVersion);
                 }
                 if (notesEl) {
                     notesEl.textContent = result.notes || '暂无更新说明';
@@ -1641,6 +1653,7 @@ function checkForUpdates(showNoUpdateToast) {
                     downloadBtn.style.display = 'inline-block';
                     downloadBtn.disabled = false;
                     downloadBtn.innerHTML = '<i class="bi bi-download"></i> 立即更新';
+                    downloadBtn.dataset.updateMode = result.install_mode || (result.portable ? 'portable' : '');
                 }
                 if (restartBtn) {
                     restartBtn.style.display = 'none';
@@ -1684,6 +1697,7 @@ function downloadAndInstallUpdate() {
     const progressArea = document.getElementById('update-progress-area');
     const progressText = document.getElementById('update-progress-text');
     const statusEl = document.getElementById('update-status');
+    const portableMode = downloadBtn && downloadBtn.dataset.updateMode === 'portable';
 
     if (downloadBtn) {
         downloadBtn.disabled = true;
@@ -1696,10 +1710,10 @@ function downloadAndInstallUpdate() {
         progressBar.style.width = '0%';
     }
     if (progressText) {
-        progressText.textContent = '准备下载...';
+        progressText.textContent = portableMode ? '准备下载便携版更新...' : '准备下载...';
     }
     if (statusEl) {
-        statusEl.textContent = '正在下载更新...';
+        statusEl.textContent = portableMode ? '正在下载便携版更新...' : '正在下载更新...';
         statusEl.className = 'text-info';
     }
 
@@ -1723,21 +1737,23 @@ function downloadAndInstallUpdate() {
                 progressBar.style.width = '100%';
             }
             if (progressText) {
-                progressText.textContent = result.success ? '下载并安装完成' : '下载失败';
+                progressText.textContent = result.success
+                    ? (portableMode ? '下载完成，正在替换程序' : '下载并安装完成')
+                    : '下载失败';
             }
 
             if (result.success) {
                 if (statusEl) {
-                    statusEl.textContent = '更新已安装，重启后生效';
+                    statusEl.textContent = portableMode ? '便携版更新已下载，正在自动替换并重启...' : '更新已安装，重启后生效';
                     statusEl.className = 'text-success';
                 }
                 if (downloadBtn) {
                     downloadBtn.style.display = 'none';
                 }
                 if (restartBtn) {
-                    restartBtn.style.display = 'inline-block';
+                    restartBtn.style.display = portableMode ? 'none' : 'inline-block';
                 }
-                showToast('更新已安装，重启后生效', 'success');
+                showToast(portableMode ? '便携版更新已下载，应用将自动重启' : '更新已安装，重启后生效', 'success');
             } else {
                 if (statusEl) {
                     statusEl.textContent = '下载失败: ' + (result.message || '未知错误');
