@@ -1564,7 +1564,7 @@ async fn list_download_files(state: State<'_, AppState>) -> Result<serde_json::V
     let target = configured_download_directory(&state).await?;
     let mut items = Vec::new();
     scan_download_directory_entries(&target, &mut items)?;
-    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    items.sort_by_key(|item| std::cmp::Reverse(item.timestamp));
     Ok(serde_json::json!({
         "success": true,
         "items": items
