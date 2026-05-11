@@ -158,19 +158,27 @@ export function VideoGrid() {
           </div>
         ) : showPlaceholder ? (
           <motion.div
-            initial={false}
+            initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-[16px] border border-border bg-surface-solid/70 p-6 text-center"
+            className="flex flex-col items-center justify-center min-h-[400px] rounded-[var(--radius-xl)] bg-surface-solid/40 border border-border/50 p-12 text-center"
           >
-            <p className="text-[0.86rem] text-text-secondary mb-1">
-              还没有加载作品列表
+            <div className="w-16 h-16 rounded-[20px] bg-accent-soft flex items-center justify-center mb-6">
+              <Sparkles className="w-8 h-8 text-accent" />
+            </div>
+            <h3 className="text-[1.1rem] font-bold text-text mb-2">
+              开启你的精彩发现
+            </h3>
+            <p className="text-[0.82rem] text-text-muted mb-8 max-w-[280px] leading-relaxed">
+              尚未加载作品列表。点击下方按钮或从用户卡片中进入以开始浏览。
             </p>
-            <p className="text-[0.76rem] text-text-muted mb-4">
-              点击上方“重新加载”或用户卡片里的“查看作品列表”开始获取
-            </p>
-            <Button variant="info-outline" size="sm" onClick={() => void loadVideos()}>
-              <Grid3x3 className="w-3.5 h-3.5" />
-              加载作品
+            <Button
+              variant="default"
+              size="lg"
+              className="gap-2 rounded-[14px] px-8"
+              onClick={() => void loadVideos()}
+            >
+              <Grid3x3 className="w-4 h-4" />
+              立即加载作品
             </Button>
           </motion.div>
         ) : (
