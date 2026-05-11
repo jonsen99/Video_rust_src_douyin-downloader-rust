@@ -36,6 +36,22 @@ impl DownloadQuality {
     }
 }
 
+fn bit_rate_metric(bit_rate: &crate::api::types::BitRateInfo) -> i64 {
+    if bit_rate.data_size > 0 {
+        return bit_rate.data_size;
+    }
+    if bit_rate.bit_rate > 0 {
+        return bit_rate.bit_rate;
+    }
+    if bit_rate.quality_type > 0 {
+        return bit_rate.quality_type as i64;
+    }
+    if bit_rate.width > 0 && bit_rate.height > 0 {
+        return bit_rate.width as i64 * bit_rate.height as i64;
+    }
+    0
+}
+
 #[derive(Debug, Clone)]
 struct VideoCandidate {
     url: String,
@@ -781,6 +797,7 @@ impl Downloader {
         let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoInfo>(32);
 
         // 状态跟踪
+        let batch_started_at = Instant::now();
         let total_discovered = Arc::new(AtomicUsize::new(0));
         let completed_count = Arc::new(AtomicUsize::new(0));
         let skipped_count = Arc::new(AtomicUsize::new(0));
@@ -893,6 +910,7 @@ impl Downloader {
             let total_discovered = total_discovered.clone();
             let batch_id = batch_task_id.clone();
             let estimated = estimated_total;
+            let batch_started_at = batch_started_at;
 
             tokio::spawn(async move {
                 // 并发控制
@@ -958,7 +976,10 @@ impl Downloader {
                                     "current_downloaded": current,
                                     "total_videos": total,
                                     "processed": current,
-                                    "skipped": skipped.load(AtomicOrdering::SeqCst)
+                                    "skipped": skipped.load(AtomicOrdering::SeqCst),
+                                    "remaining": total.saturating_sub(current),
+                                    "eta_seconds": estimate_batch_eta(current, total, batch_started_at),
+                                    "status": "downloading"
                                 }),
                             ).await;
 
@@ -977,6 +998,7 @@ impl Downloader {
                     let failed = failed.clone();
                     let total_discovered = total_discovered.clone();
                     let estimated = estimated;
+                    let batch_started_at = batch_started_at;
                     let config = config.clone();
                     let http_client = http_client.clone();
 
@@ -1017,7 +1039,10 @@ impl Downloader {
                                         "current_downloaded": current,
                                         "total_videos": total,
                                         "processed": current,
-                                        "elapsed_seconds": elapsed.as_secs()
+                                        "remaining": total.saturating_sub(current),
+                                        "eta_seconds": estimate_batch_eta(current, total, batch_started_at),
+                                        "elapsed_seconds": elapsed.as_secs(),
+                                        "status": "downloading"
                                     }),
                                 ).await;
                             }
@@ -1032,15 +1057,18 @@ impl Downloader {
                                 emit_event(
                                     &progress_tx,
                                     "download-progress",
-	                            serde_json::json!({
-	                                "task_id": batch_id,
-	                                "overall_progress": (current as f32 / total as f32 * 100.0) as u32,
-	                                "current_downloaded": current,
-	                                "total_videos": total,
-	                                "processed": current,
-	                                "failed": failed.load(AtomicOrdering::SeqCst),
-	                                "message": format!("下载失败: {}", aweme_id)
-	                            }),
+                                    serde_json::json!({
+                                        "task_id": batch_id,
+                                        "overall_progress": (current as f32 / total as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total,
+                                        "processed": current,
+                                        "failed": failed.load(AtomicOrdering::SeqCst),
+                                    "remaining": total.saturating_sub(current),
+                                    "eta_seconds": estimate_batch_eta(current, total, batch_started_at),
+                                    "status": "downloading",
+                                        "message": format!("下载失败: {}", aweme_id)
+                                    }),
                                 ).await;
                             }
                         }
@@ -1085,6 +1113,12 @@ impl Downloader {
                 "batch-download-cancelled",
                 serde_json::json!({
                     "task_id": batch_task_id,
+                    "total_videos": final_total,
+                    "completed": final_completed,
+                    "processed": final_completed,
+                    "skipped": final_skipped,
+                    "failed": final_failed,
+                    "remaining": final_total.saturating_sub(final_completed),
                     "message": format!("下载已取消，已完成 {} 个视频", final_completed)
                 }),
             )
@@ -1417,6 +1451,7 @@ impl Downloader {
         .await;
 
         // 并发控制：使用配置的最大并发数
+        let batch_started_at = Instant::now();
         let max_concurrent = self.config.max_concurrent.clamp(1, 10);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
         let completed_count = Arc::new(AtomicUsize::new(0));
@@ -1454,14 +1489,17 @@ impl Downloader {
                     &self.progress_tx,
                     "download-progress",
                     serde_json::json!({
-	                        "task_id": batch_task_id,
-	                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
-	                        "current_downloaded": current,
-	                        "total_videos": total_videos,
-	                        "processed": current,
-	                        "skipped": skipped_count.load(AtomicOrdering::SeqCst),
-	                        "message": format!("跳过已下载: {}", video.desc.chars().take(15).collect::<String>())
-	                    }),
+                                        "task_id": batch_task_id,
+                                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total_videos,
+                                        "processed": current,
+                                        "skipped": skipped_count.load(AtomicOrdering::SeqCst),
+                            "remaining": total_videos.saturating_sub(current),
+                            "eta_seconds": estimate_batch_eta(current, total_videos, batch_started_at),
+                            "status": "downloading",
+                                        "message": format!("跳过已下载: {}", video.desc.chars().take(15).collect::<String>())
+                                    }),
                 ).await;
 
                 drop(permit);
@@ -1480,6 +1518,7 @@ impl Downloader {
             let completed = completed_count.clone();
             let failed = failed_count.clone();
             let aweme_id = video.aweme_id.clone();
+            let batch_started_at = batch_started_at;
 
             // 收集媒体URL
             let media_urls = self.collect_download_media_items(&video);
@@ -1490,14 +1529,17 @@ impl Downloader {
                     &self.progress_tx,
                     "download-progress",
                     serde_json::json!({
-	                        "task_id": batch_task_id,
-	                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
-	                        "current_downloaded": current,
-	                        "total_videos": total_videos,
-	                        "processed": current,
-	                        "failed": failed_count.load(AtomicOrdering::SeqCst),
-	                        "message": format!("无可下载媒体: {}", video.desc.chars().take(15).collect::<String>())
-	                    }),
+                                        "task_id": batch_task_id,
+                                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total_videos,
+                                        "processed": current,
+                                        "failed": failed_count.load(AtomicOrdering::SeqCst),
+                            "remaining": total_videos.saturating_sub(current),
+                            "eta_seconds": estimate_batch_eta(current, total_videos, batch_started_at),
+                            "status": "downloading",
+                                        "message": format!("无可下载媒体: {}", video.desc.chars().take(15).collect::<String>())
+                                    }),
                 ).await;
                 drop(permit);
                 continue;
@@ -1567,13 +1609,16 @@ impl Downloader {
                             &progress_tx,
                             "download-progress",
                             serde_json::json!({
-	                                "task_id": batch_id,
-	                                "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
-	                                "current_downloaded": current,
-	                                "total_videos": total_videos,
-	                                "processed": current,
-	                                "message": format!("完成 {}/{}: {}", current, total_videos, display_name_for_log)
-	                            }),
+                                        "task_id": batch_id,
+                                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total_videos,
+                                        "processed": current,
+                                    "remaining": total_videos.saturating_sub(current),
+                                    "eta_seconds": estimate_batch_eta(current, total_videos, batch_started_at),
+                                    "status": "downloading",
+                                        "message": format!("完成 {}/{}: {}", current, total_videos, display_name_for_log)
+                                    }),
                         ).await;
                     }
                     Err(e) => {
@@ -1594,14 +1639,17 @@ impl Downloader {
                             &progress_tx,
                             "download-progress",
                             serde_json::json!({
-	                                "task_id": batch_id,
-	                                "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
-	                                "current_downloaded": current,
-	                                "total_videos": total_videos,
-	                                "processed": current,
-	                                "failed": failed.load(AtomicOrdering::SeqCst),
-	                                "message": format!("失败 {}/{}: {}", current, total_videos, display_name_for_log)
-	                            }),
+                                        "task_id": batch_id,
+                                        "overall_progress": (current as f32 / total_videos as f32 * 100.0) as u32,
+                                        "current_downloaded": current,
+                                        "total_videos": total_videos,
+                                        "processed": current,
+                                        "failed": failed.load(AtomicOrdering::SeqCst),
+                                    "remaining": total_videos.saturating_sub(current),
+                                    "eta_seconds": estimate_batch_eta(current, total_videos, batch_started_at),
+                                    "status": "downloading",
+                                        "message": format!("失败 {}/{}: {}", current, total_videos, display_name_for_log)
+                                    }),
                         ).await;
                     }
                 }
@@ -1631,6 +1679,12 @@ impl Downloader {
                 "batch-download-cancelled",
                 serde_json::json!({
                     "task_id": batch_task_id,
+                    "total_videos": total_videos,
+                    "completed": final_completed,
+                    "processed": final_completed,
+                    "skipped": final_skipped,
+                    "failed": final_failed,
+                    "remaining": total_videos.saturating_sub(final_completed),
                     "message": format!("下载已取消，已完成 {} 个视频", final_completed)
                 }),
             )
@@ -1941,33 +1995,22 @@ fn collect_video_candidates(video: &VideoInfo) -> Vec<VideoCandidate> {
         });
     };
 
-    push_candidate(
-        video.video.download_addr.clone(),
-        i64::MAX,
-        false,
-        true,
-        false,
-    );
-    push_candidate(
-        video.video.play_addr_h264.clone(),
-        i64::MAX - 1,
-        true,
-        false,
-        false,
-    );
+    push_candidate(video.video.download_addr.clone(), 0, false, true, false);
+    push_candidate(video.video.play_addr_h264.clone(), 0, true, false, false);
     push_candidate(video.video.play_addr_lowbr.clone(), 1, true, false, true);
 
     if let Some(bit_rates) = &video.video.bit_rate {
         for bit_rate in bit_rates {
-            let metric = if bit_rate.data_size > 0 {
-                bit_rate.data_size
-            } else if bit_rate.bit_rate > 0 {
-                bit_rate.bit_rate
-            } else {
-                0
-            };
+            let metric = bit_rate_metric(bit_rate);
+            let h264_metric = if metric > 0 { metric + 1 } else { 0 };
 
-            push_candidate(bit_rate.play_addr_h264.clone(), metric, true, false, false);
+            push_candidate(
+                bit_rate.play_addr_h264.clone(),
+                h264_metric,
+                true,
+                false,
+                false,
+            );
             push_candidate(
                 bit_rate.play_addr.clone(),
                 metric,
@@ -2008,6 +2051,24 @@ async fn wait_if_paused(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn estimate_batch_eta(
+    processed_count: usize,
+    total_count: usize,
+    started_at: Instant,
+) -> Option<u64> {
+    if processed_count == 0 || total_count == 0 || processed_count >= total_count {
+        return None;
+    }
+
+    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+    let remaining = total_count.saturating_sub(processed_count) as f64;
+    Some(
+        ((remaining * elapsed) / processed_count as f64)
+            .ceil()
+            .max(1.0) as u64,
+    )
 }
 
 fn build_download_headers(config: &AppConfig) -> HeaderMap {
@@ -2122,9 +2183,12 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
     let download_addr = candidates.iter().find(|c| c.is_download_addr);
     let h264_best = candidates
         .iter()
-        .filter(|c| c.is_h264)
+        .filter(|c| c.is_h264 && !c.is_lowbr)
         .max_by_key(|c| c.metric);
-    let highest_metric = candidates.iter().max_by_key(|c| c.metric);
+    let highest_metric = candidates
+        .iter()
+        .filter(|c| c.metric > 0 && !c.is_download_addr && !c.is_lowbr)
+        .max_by_key(|c| c.metric);
     let lowbr = candidates.iter().find(|c| c.is_lowbr);
     let smallest_metric = candidates
         .iter()
@@ -2134,10 +2198,78 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
 
     let selected = match quality {
         DownloadQuality::Auto => download_addr.or(h264_best).or(highest_metric).or(first),
-        DownloadQuality::Highest => download_addr.or(highest_metric).or(first),
+        DownloadQuality::Highest => highest_metric.or(download_addr).or(h264_best).or(first),
         DownloadQuality::H264 => h264_best.or(download_addr).or(highest_metric).or(first),
         DownloadQuality::Smallest => lowbr.or(smallest_metric).or(h264_best).or(first),
     };
 
     selected.map(|c| c.url.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::BitRateInfo;
+
+    fn video_with_quality_candidates() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "play-default".to_string();
+        video.video.download_addr = Some("download-default".to_string());
+        video.video.play_addr_h264 = Some("top-h264".to_string());
+        video.video.play_addr_lowbr = Some("lowbr".to_string());
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 100,
+                bit_rate: 100,
+                play_addr: Some("bitrate-small".to_string()),
+                play_addr_h264: Some("bitrate-small-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                play_addr: Some("bitrate-high".to_string()),
+                play_addr_h264: Some("bitrate-high-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
+    #[test]
+    fn auto_keeps_download_addr_preference() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::Auto).as_deref(),
+            Some("download-default")
+        );
+    }
+
+    #[test]
+    fn highest_prefers_measured_quality_candidate() {
+        let video = video_with_quality_candidates();
+        let selected = select_video_url(&video, DownloadQuality::Highest);
+        assert!(matches!(
+            selected.as_deref(),
+            Some("bitrate-high" | "bitrate-high-h264")
+        ));
+    }
+
+    #[test]
+    fn h264_prefers_best_h264_candidate() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::H264).as_deref(),
+            Some("bitrate-high-h264")
+        );
+    }
+
+    #[test]
+    fn smallest_prefers_lowbr_candidate() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::Smallest).as_deref(),
+            Some("lowbr")
+        );
+    }
 }

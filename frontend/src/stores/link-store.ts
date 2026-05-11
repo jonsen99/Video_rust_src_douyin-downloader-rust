@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getErrorMessage, parseLink, type UserInfo, type VideoInfo } from "@/lib/tauri";
 import { useAppStore, useLogStore } from "@/stores/app-store";
+import { useToastStore } from "@/components/ui/toast";
 
 interface LinkStoreState {
   link: string;
@@ -27,16 +28,21 @@ export const useLinkStore = create<LinkStoreState>((set) => ({
     }
 
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
     useAppStore.getState().setView("link");
     set({ link, parsing: true, videos: [], user: null, error: null });
     addLog("解析链接...", "info");
+    const loadingToastId = toast("正在解析链接...", "loading");
 
     try {
       const result = await parseLink(link);
+      useToastStore.getState().dismiss(loadingToastId);
+      
       if (!result.success) {
         const message = result.message || "链接解析失败";
         set({ parsing: false, error: message });
         addLog(message, "error");
+        toast(message, "error", "解析失败");
         return;
       }
 
@@ -53,16 +59,21 @@ export const useLinkStore = create<LinkStoreState>((set) => ({
         error: videos.length > 0 || result.user ? null : "没有解析到可下载内容",
       });
 
-      addLog(
-        videos.length > 0
-          ? `链接解析完成，获取到 ${videos.length} 个作品`
-          : "链接解析完成",
-        videos.length > 0 || result.user ? "success" : "warning"
-      );
+      const msg = videos.length > 0
+        ? `链接解析完成，获取到 ${videos.length} 个作品`
+        : result.user
+          ? `已找到用户: ${result.user.nickname}`
+          : "链接解析完成";
+      
+      const type = videos.length > 0 || result.user ? "success" : "warning";
+      addLog(msg, type);
+      toast(msg, type, "解析完成");
     } catch (error) {
+      useToastStore.getState().dismiss(loadingToastId);
       const message = getErrorMessage(error, "链接解析失败");
       set({ parsing: false, error: message });
       addLog(message, "error");
+      toast(message, "error", "解析异常");
     }
   },
 

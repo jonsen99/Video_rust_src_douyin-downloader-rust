@@ -978,6 +978,22 @@ impl DouyinClient {
         None
     }
 
+    fn json_count_value(value: &serde_json::Value, keys: &[&str]) -> i64 {
+        for key in keys {
+            let item = &value[*key];
+            if let Some(number) = item.as_i64() {
+                return number;
+            }
+            if let Some(text) = item.as_str() {
+                let normalized = text.trim().replace(',', "");
+                if let Ok(number) = normalized.parse::<i64>() {
+                    return number;
+                }
+            }
+        }
+        0
+    }
+
     /// 搜索用户
     pub async fn search_user(&self, keyword: &str) -> Result<SearchUserResult> {
         let keyword = keyword.trim();
@@ -1076,7 +1092,10 @@ impl DouyinClient {
                             follower_count: user["follower_count"].as_i64().unwrap_or(0),
                             following_count: user["following_count"].as_i64().unwrap_or(0),
                             total_favorited: user["total_favorited"].as_i64().unwrap_or(0),
-                            aweme_count: user["aweme_count"].as_i64().unwrap_or(0),
+                            aweme_count: Self::json_count_value(
+                                user,
+                                &["aweme_count", "aweme_count_str", "aweme_count_text", "work_count"],
+                            ),
                             favoriting_count: user["favoriting_count"].as_i64().unwrap_or(0),
                             is_follow: user["is_follow"].as_bool().unwrap_or(false),
                             sec_uid: user["sec_uid"].as_str().unwrap_or_default().to_string(),
@@ -1401,13 +1420,15 @@ impl DouyinClient {
 
     /// 验证 Cookie 是否有效
     pub async fn verify_cookie(&self) -> Result<CookieStatus> {
-        let response = self.get_recommended_feed(0, 1).await;
-
-        match response {
-            Ok(_) => Ok(CookieStatus {
+        match self.get_current_user().await {
+            Ok(user) => Ok(CookieStatus {
                 valid: true,
-                user_name: None,
-                user_id: None,
+                user_name: Some(user.nickname),
+                user_id: Some(if user.uid.is_empty() {
+                    user.sec_uid
+                } else {
+                    user.uid
+                }),
                 expires_at: None,
                 message: "Cookie 有效".to_string(),
             }),
@@ -1416,7 +1437,11 @@ impl DouyinClient {
                 user_name: None,
                 user_id: None,
                 expires_at: None,
-                message: format!("Cookie 无效: {}", e),
+                message: if looks_like_logged_out_error(&e.to_string()) {
+                    "用户未登录，请在设置中重新登录并刷新 Cookie".to_string()
+                } else {
+                    format!("Cookie 无效: {}", e)
+                },
             }),
         }
     }
@@ -1461,4 +1486,16 @@ impl DouyinClient {
             verify_status: data["verify_status"].as_i64().unwrap_or(0) as i32,
         })
     }
+}
+
+fn looks_like_logged_out_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    message.contains("用户未登录")
+        || message.contains("未登录")
+        || message.contains("登录态")
+        || message.contains("重新登录")
+        || lower.contains("not login")
+        || lower.contains("not logged in")
+        || lower.contains("login required")
+        || lower.contains("session expired")
 }

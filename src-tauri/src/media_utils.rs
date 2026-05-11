@@ -172,6 +172,22 @@ pub fn python_video_summary(
         value["music_duration"] = music["duration"].clone();
     }
 
+    value["video"] = serde_json::json!({
+        "cover": video.video.cover,
+        "dynamic_cover": video.video.dynamic_cover,
+        "origin_cover": video.video.origin_cover,
+        "preview_addr": video.video.preview_addr,
+        "play_addr": video.video.play_addr,
+        "play_addr_h264": video.video.play_addr_h264,
+        "play_addr_lowbr": video.video.play_addr_lowbr,
+        "download_addr": video.video.download_addr,
+        "width": video.video.width,
+        "height": video.video.height,
+        "duration": normalize_duration_seconds(video.video.duration),
+        "ratio": video.video.ratio,
+        "bit_rate": video.video.bit_rate,
+    });
+
     value
 }
 
@@ -205,6 +221,21 @@ pub fn python_video_detail_value(video: &VideoInfo) -> serde_json::Value {
         "images": video.image_urls.clone().unwrap_or_default(),
         "videos": media_urls,
         "bgm_url": python_music_play_url(video),
+        "video": {
+            "cover": video.video.cover,
+            "dynamic_cover": video.video.dynamic_cover,
+            "origin_cover": video.video.origin_cover,
+            "preview_addr": video.video.preview_addr,
+            "play_addr": video.video.play_addr,
+            "play_addr_h264": video.video.play_addr_h264,
+            "play_addr_lowbr": video.video.play_addr_lowbr,
+            "download_addr": video.video.download_addr,
+            "width": video.video.width,
+            "height": video.video.height,
+            "duration": normalize_duration_seconds(video.video.duration),
+            "ratio": video.video.ratio,
+            "bit_rate": video.video.bit_rate,
+        },
     })
 }
 
@@ -241,10 +272,17 @@ pub fn python_recommended_video(video: &VideoInfo) -> serde_json::Value {
         "video": {
             "cover": video.video.cover,
             "dynamic_cover": video.video.dynamic_cover,
+            "origin_cover": video.video.origin_cover,
+            "preview_addr": video.video.preview_addr,
             "play_addr": video.video.play_addr,
+            "play_addr_h264": video.video.play_addr_h264,
+            "play_addr_lowbr": video.video.play_addr_lowbr,
+            "download_addr": video.video.download_addr,
             "width": video.video.width,
             "height": video.video.height,
             "duration": normalize_duration_seconds(video.video.duration),
+            "ratio": video.video.ratio,
+            "bit_rate": video.video.bit_rate,
         },
         "music": {
             "title": music["title"],

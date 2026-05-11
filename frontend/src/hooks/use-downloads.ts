@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useDownloadStore, useLogStore } from "@/stores/app-store";
+import { useToastStore } from "@/components/ui/toast";
 import type { VideoInfo } from "@/lib/tauri";
 import {
   addDownloadTask,
@@ -25,6 +26,7 @@ export function useDownloads() {
   const removeTask = useDownloadStore((s) => s.removeTask);
   const clearCompleted = useDownloadStore((s) => s.clearCompleted);
   const addLog = useLogStore((s) => s.addLog);
+  const toast = useToastStore((s) => s.toast);
 
   const getTaskLabel = useCallback((taskId: string) => {
     return useDownloadStore.getState().tasks[taskId]?.filename || taskId;
@@ -34,7 +36,9 @@ export function useDownloads() {
     async (video: VideoInfo) => {
       const taskId = video.aweme_id;
       const displayName = `${video.author.nickname}_${video.aweme_id}`;
-      addLog(`开始下载: ${video.desc?.slice(0, 30) || video.aweme_id}`, "info");
+      const logMsg = `开始下载: ${video.desc?.slice(0, 30) || video.aweme_id}`;
+      addLog(logMsg, "info");
+      toast(logMsg, "info");
 
       updateTask({
         id: taskId,
@@ -59,14 +63,17 @@ export function useDownloads() {
         const msg = e instanceof Error ? e.message : "下载失败";
         updateTask({ id: taskId, status: "error" });
         addLog(msg, "error");
+        toast(msg, "error");
       }
     },
-    [updateTask, replaceTaskId, addLog]
+    [updateTask, replaceTaskId, addLog, toast]
   );
 
   const downloadBatch = useCallback(
     async (videos: VideoInfo[]) => {
-      addLog(`批量下载 ${videos.length} 个视频`, "info");
+      const logMsg = `批量下载 ${videos.length} 个作品`;
+      addLog(logMsg, "info");
+      toast(logMsg, "info");
 
       for (const video of videos) {
         try {
@@ -88,60 +95,77 @@ export function useDownloads() {
       }
 
       addLog("批量下载已提交", "success");
+      toast("已添加至下载队列", "success", "批量下载");
     },
-    [updateTask, addLog]
+    [updateTask, addLog, toast]
   );
 
   const cancelDownload = useCallback(
     async (taskId: string) => {
+      const existing = useDownloadStore.getState().tasks[taskId];
+      if (existing?.status === "cancelled") return;
       updateTask({ id: taskId, status: "cancelled", speed: 0, etaSeconds: 0 });
       try {
         const result = await cancelDownloadTask(taskId);
         if (!result.success) {
           throw new Error(result.message || "取消下载失败");
         }
-        addLog(`已取消下载: ${getTaskLabel(taskId)}`, "warning");
+        const label = getTaskLabel(taskId);
+        addLog(`已取消下载: ${label}`, "warning");
+        toast(`已取消下载: ${label}`, "warning");
       } catch (error) {
-        addLog(error instanceof Error ? error.message : "取消下载失败", "error");
+        const msg = error instanceof Error ? error.message : "取消下载失败";
+        addLog(msg, "error");
+        toast(msg, "error");
       }
     },
-    [updateTask, addLog, getTaskLabel]
+    [updateTask, addLog, getTaskLabel, toast]
   );
 
   const pauseTask = useCallback(
     async (taskId: string) => {
       const previousStatus = useDownloadStore.getState().tasks[taskId]?.status || "downloading";
+      if (previousStatus === "paused") return;
       updateTask({ id: taskId, status: "paused", speed: 0 });
       try {
         const result = await pauseDownload(taskId);
         if (!result.success) {
           throw new Error(result.message || "暂停下载失败");
         }
-        addLog(`已暂停下载: ${getTaskLabel(taskId)}`, "info");
+        const label = getTaskLabel(taskId);
+        addLog(`已暂停下载: ${label}`, "info");
+        toast(`已暂停下载: ${label}`, "info");
       } catch (error) {
         updateTask({ id: taskId, status: previousStatus });
-        addLog(error instanceof Error ? error.message : "暂停下载失败", "error");
+        const msg = error instanceof Error ? error.message : "暂停下载失败";
+        addLog(msg, "error");
+        toast(msg, "error");
       }
     },
-    [updateTask, addLog, getTaskLabel]
+    [updateTask, addLog, getTaskLabel, toast]
   );
 
   const resumeTask = useCallback(
     async (taskId: string) => {
       const previousStatus = useDownloadStore.getState().tasks[taskId]?.status || "paused";
+      if (previousStatus === "downloading") return;
       updateTask({ id: taskId, status: "downloading" });
       try {
         const result = await resumeDownload(taskId);
         if (!result.success) {
           throw new Error(result.message || "继续下载失败");
         }
-        addLog(`继续下载: ${getTaskLabel(taskId)}`, "info");
+        const label = getTaskLabel(taskId);
+        addLog(`继续下载: ${label}`, "info");
+        toast(`继续下载: ${label}`, "info");
       } catch (error) {
         updateTask({ id: taskId, status: previousStatus });
-        addLog(error instanceof Error ? error.message : "继续下载失败", "error");
+        const msg = error instanceof Error ? error.message : "继续下载失败";
+        addLog(msg, "error");
+        toast(msg, "error");
       }
     },
-    [updateTask, addLog, getTaskLabel]
+    [updateTask, addLog, getTaskLabel, toast]
   );
 
   const removeDownload = useCallback(
@@ -221,26 +245,36 @@ function normalizeBackendTask(value: unknown): (Partial<DownloadTask> & { id: st
   const id = String(task.id || "").trim();
   if (!id) return null;
 
-  const title = String(task.title || task.filename || id).trim();
+  const title = String(task.title || task.filename || task.display_name || "").trim();
   const downloadedBytes = Number(task.downloaded_size ?? task.downloadedBytes ?? 0) || 0;
   const totalBytes = Number(task.total_size ?? task.totalBytes ?? 0) || 0;
+  const startTime = normalizeTimestamp(task.start_time ?? task.create_time ?? task.startTime);
+  const finishedTime = normalizeTimestamp(task.end_time ?? task.complete_time ?? task.finishedTime);
 
   return {
     id,
     awemeId: String(task.aweme_id || task.awemeId || "").trim(),
-    filename: title,
-    progress: Number(task.progress ?? 0) || 0,
+    ...(title ? { filename: title } : {}),
+    progress: Number(task.progress ?? task.overall_progress ?? 0) || 0,
     speed: 0,
     status: normalizeStatus(task.status),
     savePath: String(task.save_path || task.savePath || "").trim(),
     mediaType: String(task.media_type || task.mediaType || "").trim(),
-    mediaCount: Number(task.total_files ?? task.mediaCount ?? 0) || undefined,
-    fileTotal: Number(task.total_files ?? 0) || undefined,
-    fileIndex: Number(task.completed_files ?? 0) || undefined,
+    mediaCount: Number(task.total_videos ?? task.total_files ?? task.mediaCount ?? 0) || undefined,
+    fileTotal: Number(task.total_videos ?? task.total_files ?? 0) || undefined,
+    fileIndex: Number(task.processed ?? task.current_downloaded ?? task.completed_files ?? 0) || undefined,
+    skippedCount: Number(task.skipped ?? task.skipped_count ?? 0) || undefined,
+    failedCount: Number(task.failed ?? task.failed_count ?? 0) || undefined,
     downloadedBytes: downloadedBytes || undefined,
     totalBytes: totalBytes || undefined,
-    startTime: Number(task.create_time ?? 0) ? Number(task.create_time) * 1000 : undefined,
-    finishedTime: Number(task.complete_time ?? 0) ? Number(task.complete_time) * 1000 : undefined,
+    startTime,
+    finishedTime,
     errorMessage: String(task.error_msg || "").trim() || undefined,
   };
+}
+
+function normalizeTimestamp(value: unknown) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n > 10_000_000_000 ? n : n * 1000;
 }

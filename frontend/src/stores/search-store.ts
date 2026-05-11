@@ -7,9 +7,28 @@ import {
   type UserInfo,
   type VideoInfo,
 } from "@/lib/tauri";
-import { useAppStore, useLogStore } from "@/stores/app-store";
+import { useAlertStore, useAppStore, useLogStore } from "@/stores/app-store";
+import { useToastStore } from "@/components/ui/toast";
 
 const PAGE_SIZE = 18;
+
+// ... (utility functions)
+
+function checkQuotaError(message: string | undefined): boolean {
+  const text = (message || "").toLowerCase();
+  return /无额度|次数限制|quota|limit|too many requests/i.test(text);
+}
+
+function showQuotaAlert(message: string) {
+  useAlertStore.getState().showAlert({
+    title: "达到使用限制",
+    variant: "warning",
+    description: `${message}\n\n当前的 API 调用额度已耗尽或触发了频率限制。这通常是由于短时间内请求过多导致的。请稍后再试，或检查你的网络代理及 Cookie 设置。`,
+    actionLabel: "知道了",
+  });
+}
+
+// ... (rest of the file)
 
 let latestSearchRequestId = 0;
 let latestUserRequestId = 0;
@@ -92,6 +111,38 @@ function formatSearchErrorMessage(message: string | undefined, fallback = "搜�
   return text.length > 240 ? `${text.slice(0, 180)}...` : text;
 }
 
+function isSameUser(left: UserInfo, right: UserInfo): boolean {
+  if (left.sec_uid && right.sec_uid) return left.sec_uid === right.sec_uid;
+  if (left.uid && right.uid) return left.uid === right.uid;
+  return Boolean(left.nickname && right.nickname && left.nickname === right.nickname);
+}
+
+function shouldEnrichSearchUser(user: UserInfo): boolean {
+  return Boolean(user.sec_uid && (!user.aweme_count || user.aweme_count <= 0));
+}
+
+function mergeDetailedUserIntoSearchState(
+  current: SearchStoreState,
+  target: UserInfo,
+  detail: UserInfo
+): Partial<SearchStoreState> {
+  const users = current.users.map((user) =>
+    isSameUser(user, target) ? mergeUserInfo(user, detail) : user
+  );
+  const currentUser =
+    current.currentUser && isSameUser(current.currentUser, target)
+      ? mergeUserInfo(current.currentUser, detail)
+      : current.currentUser;
+
+  return { users, currentUser };
+}
+
+function openVerifyWindow(verifyUrl: string | undefined, addLog: (message: string, type: "info" | "success" | "warning" | "error") => void) {
+  void openVerifyBrowser(verifyUrl)
+    .then((result) => addLog(result.message, result.success ? "info" : "warning"))
+    .catch(() => addLog("无法打开应用内验证窗口，请用桌面模式启动后重试", "warning"));
+}
+
 function uniqueVideos(existing: VideoInfo[], incoming: VideoInfo[]) {
   const seen = new Set(existing.map((video) => video.aweme_id).filter(Boolean));
   const next = [...existing];
@@ -118,6 +169,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestVideoRequestId += 1;
     latestLoadMoreRequestId += 1;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
     useAppStore.getState().setView("search");
 
     set({
@@ -135,16 +187,37 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     });
 
     addLog(`搜索用户: ${query}`, "info");
+    const loadingToastId = toast(`正在搜索用户: ${query}`, "loading");
 
     try {
+      const enrichSearchUserStats = (baseUsers: UserInfo[]) => {
+        const candidates = baseUsers.filter(shouldEnrichSearchUser).slice(0, 10);
+        if (candidates.length === 0) return;
+
+        void (async () => {
+          for (let index = 0; index < candidates.length; index += 3) {
+            const batch = candidates.slice(index, index + 3);
+            await Promise.allSettled(
+              batch.map(async (user) => {
+                const detail = await getUserDetail(user.sec_uid, user.nickname);
+                if (requestId !== latestSearchRequestId || !detail.success || !detail.user) return;
+                set((current) => mergeDetailedUserIntoSearchState(current, user, detail.user!));
+              })
+            );
+          }
+        })();
+      };
+
       const result = await searchUser(query);
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestSearchRequestId) return;
 
       if (result.need_verify) {
-        void openVerifyBrowser(result.verify_url).catch(() => {});
+        openVerifyWindow(result.verify_url, addLog);
         const message = result.message || "需要完成抖音验证";
         set({ searching: false, error: message });
         addLog(message, "warning");
+        toast(message, "warning", "需要验证");
         return;
       }
 
@@ -152,6 +225,12 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = formatSearchErrorMessage(result.message);
         set({ searching: false, error: message });
         addLog(message, "error");
+        
+        if (checkQuotaError(message)) {
+          showQuotaAlert(message);
+        } else {
+          toast(message, "error", "搜索失败");
+        }
         return;
       }
 
@@ -166,6 +245,8 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
           error: null,
         });
         addLog(`已匹配用户: ${result.user.nickname}`, "success");
+        toast(`已找到用户: ${result.user.nickname}`, "success");
+        enrichSearchUserStats([result.user]);
         return;
       }
 
@@ -179,12 +260,21 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         hasMore: false,
         error: users.length > 0 ? null : "未找到用户",
       });
-      addLog(`找到 ${users.length} 个候选用户`, users.length > 0 ? "success" : "warning");
+      const msg = `找到 ${users.length} 个候选用户`;
+      addLog(msg, users.length > 0 ? "success" : "warning");
+      toast(msg, users.length > 0 ? "success" : "warning");
+      enrichSearchUserStats(users);
     } catch (error) {
       if (requestId !== latestSearchRequestId) return;
       const message = formatSearchErrorMessage(error instanceof Error ? error.message : undefined);
       set({ searching: false, error: message });
       addLog(message, "error");
+      
+      if (checkQuotaError(message)) {
+        showQuotaAlert(message);
+      } else {
+        toast(message, "error", "搜索异常");
+      }
     }
   },
 
@@ -193,6 +283,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestVideoRequestId += 1;
     latestLoadMoreRequestId += 1;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
 
     set({
       loadingUser: true,
@@ -204,15 +295,32 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       error: null,
     });
     addLog(`加载用户详情: ${user.nickname}`, "info");
+    const loadingToastId = toast(`正在加载 ${user.nickname} 的详情`, "loading");
 
     try {
       const detail = await getUserDetail(user.sec_uid, user.nickname);
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestUserRequestId) return;
+
+      if (detail.need_verify) {
+        openVerifyWindow(detail.verify_url, addLog);
+        const message = detail.message || "需要完成抖音验证";
+        set({ loadingUser: false, error: message, currentUser: user });
+        addLog(message, "warning");
+        toast(message, "warning", "需要验证");
+        return;
+      }
 
       if (!detail.success || !detail.user) {
         const message = detail.message || "获取用户详情失败";
         set({ loadingUser: false, error: message, currentUser: user });
         addLog(message, "error");
+        
+        if (checkQuotaError(message)) {
+          showQuotaAlert(message);
+        } else {
+          toast(message, "error", "加载失败");
+        }
         return;
       }
 
@@ -224,10 +332,17 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       });
       addLog(`已载入 ${mergedUser.nickname} 的详情`, "success");
     } catch (error) {
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestUserRequestId) return;
       const message = error instanceof Error ? error.message : "获取用户详情失败";
       set({ loadingUser: false, error: message, currentUser: user });
       addLog(message, "error");
+      
+      if (checkQuotaError(message)) {
+        showQuotaAlert(message);
+      } else {
+        toast(message, "error", "加载异常");
+      }
     }
   },
 
@@ -239,6 +354,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestLoadMoreRequestId += 1;
     const secUid = state.currentUser.sec_uid;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
     const keepExistingVideos = state.videos.length > 0;
     set({
       loadingVideos: true,
@@ -247,15 +363,32 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       error: null,
     });
     addLog(`加载作品列表: ${state.currentUser.nickname}`, "info");
+    const loadingToastId = toast(`正在获取 ${state.currentUser.nickname} 的作品列表`, "loading");
 
     try {
       const result = await getUserVideos(secUid, PAGE_SIZE, 0);
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestVideoRequestId || get().currentUser?.sec_uid !== secUid) return;
+
+      if (result.need_verify) {
+        openVerifyWindow(result.verify_url, addLog);
+        const message = result.message || "需要完成抖音验证";
+        set({ loadingVideos: false, error: message });
+        addLog(message, "warning");
+        toast(message, "warning", "需要验证");
+        return;
+      }
 
       if (!result.success) {
         const message = result.message || "获取作品列表失败";
         set({ loadingVideos: false, error: message });
         addLog(message, "error");
+        
+        if (checkQuotaError(message)) {
+          showQuotaAlert(message);
+        } else {
+          toast(message, "error", "加载失败");
+        }
         return;
       }
 
@@ -268,11 +401,19 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         error: null,
       });
       addLog(`已加载 ${videos.length} 个作品`, "success");
+      toast(`成功加载 ${videos.length} 个作品`, "success");
     } catch (error) {
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestVideoRequestId) return;
       const message = error instanceof Error ? error.message : "获取作品列表失败";
       set({ loadingVideos: false, error: message });
       addLog(message, "error");
+      
+      if (checkQuotaError(message)) {
+        showQuotaAlert(message);
+      } else {
+        toast(message, "error", "加载异常");
+      }
     }
   },
 
@@ -291,6 +432,14 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     try {
       const result = await getUserVideos(secUid, PAGE_SIZE, cursor);
       if (requestId !== latestLoadMoreRequestId || get().currentUser?.sec_uid !== secUid) return;
+
+      if (result.need_verify) {
+        openVerifyWindow(result.verify_url, addLog);
+        const message = result.message || "需要完成抖音验证";
+        set({ loadingMore: false, error: message });
+        addLog(message, "warning");
+        return;
+      }
 
       if (!result.success) {
         const message = result.message || "加载更多失败";

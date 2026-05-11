@@ -37,15 +37,21 @@ const commandPanelLayoutTransition = {
 
 const commandContentTransition = {
   type: "spring",
-  duration: 0.34,
+  duration: 0.3,
   bounce: 0,
 } as const;
 
 const contentVariants = {
-  initial: { opacity: 0, y: 8, filter: "blur(4px)" },
+  initial: { opacity: 0, y: 6, filter: "blur(4px)" },
   animate: { opacity: 1, y: 0, filter: "blur(0px)" },
-  exit: { opacity: 0, y: -6, filter: "blur(4px)" },
+  exit: { opacity: 0, y: -4, filter: "blur(4px)" },
 };
+
+const iconSwitchTransition = {
+  type: "spring",
+  duration: 0.3,
+  bounce: 0,
+} as const;
 
 export function CommandPopover() {
   const setCommandOpen = useAppStore((s) => s.setCommandOpen);
@@ -138,7 +144,7 @@ export function CommandPopover() {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className="fixed inset-0 z-[1080] bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 z-[1080] bg-black/40 backdrop-blur-md"
         onClick={() => setCommandOpen(false)}
       />
 
@@ -157,10 +163,10 @@ export function CommandPopover() {
         className={cn(
           "fixed z-[1090] flex flex-col overflow-hidden",
           "inset-0 m-auto w-fit h-fit",
-          "w-[540px] max-w-[calc(100vw-48px)]",
-          "rounded-[var(--radius-2xl)]",
-          "bg-surface-solid/[0.92] backdrop-blur-2xl",
-          "shadow-[0_60px_140px_rgba(0,0,0,0.55),0_0_80px_rgba(0,0,0,0.15)]"
+          "w-[640px] max-w-[calc(100vw-48px)]",
+          "rounded-[var(--radius-xl)]",
+          "bg-surface-solid/80 backdrop-blur-3xl",
+          "shadow-[0_44px_110px_rgba(0,0,0,0.42),0_0_0_1px_var(--color-border)]"
         )}
       >
         {/* Header with mode tabs */}
@@ -173,8 +179,10 @@ export function CommandPopover() {
                   { mode: "link" as const, icon: Link2, label: "解析链接" },
                 ] as const
               ).map(({ mode, icon: TabIcon, label }) => (
-                <button
+                <motion.button
                   key={mode}
+                  layout
+                  whileTap={{ scale: 0.96 }}
                   onClick={() => {
                     setCommandMode(mode);
                     setValue("");
@@ -193,14 +201,14 @@ export function CommandPopover() {
                       className="absolute inset-0 rounded-[10px] bg-accent/[0.12] shadow-[0_0_12px_rgba(254,44,85,0.08)]"
                       transition={{
                         type: "spring",
-                        stiffness: 400,
-                        damping: 30,
+                        duration: 0.3,
+                        bounce: 0,
                       }}
                     />
                   )}
                   <TabIcon className="relative w-3.5 h-3.5" />
                   <span className="relative">{label}</span>
-                </button>
+                </motion.button>
               ))}
             </div>
           </LayoutGroup>
@@ -233,12 +241,23 @@ export function CommandPopover() {
                   : "bg-white/[0.06]"
               )}
             >
-              <Icon
-                className={cn(
-                  "w-[18px] h-[18px] transition-colors duration-200",
-                  value ? "text-accent" : "text-text-muted"
-                )}
-              />
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={commandMode}
+                  initial={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                  animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                  exit={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                  transition={iconSwitchTransition}
+                  className="flex items-center justify-center"
+                >
+                  <Icon
+                    className={cn(
+                      "w-[18px] h-[18px] transition-colors duration-200",
+                      value ? "text-accent" : "text-text-muted"
+                    )}
+                  />
+                </motion.div>
+              </AnimatePresence>
             </div>
 
             <input

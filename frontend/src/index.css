@@ -35,9 +35,9 @@
 
   --radius-sm: 8px;
   --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 30px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 18px 55px rgba(0, 0, 0, 0.12), 0 4px 14px rgba(0, 0, 0, 0.06);
@@ -55,6 +55,51 @@
   --bottombar-expanded: 320px;
 }
 
+/* ── Advanced Design Utilities ── */
+@layer utilities {
+  .glass-premium {
+    @apply bg-surface-solid/70 backdrop-blur-3xl border border-white/[0.08] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.4)];
+  }
+  .glass-glow-accent {
+    @apply shadow-[0_0_40px_-12px_rgba(254,44,85,0.35)];
+  }
+  .animate-shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2.5s infinite;
+  }
+}
+
+/* ── Premium Keyframes ── */
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes orb-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(40px, -30px) scale(1.1); }
+  50% { transform: translate(-20px, 40px) scale(0.9); }
+  75% { transform: translate(30px, 15px) scale(1.05); }
+}
+
+@keyframes nebula-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; filter: blur(40px); }
+  50% { transform: scale(1.2); opacity: 0.6; filter: blur(60px); }
+}
+
+@keyframes loader-spin-custom {
+  0% { transform: rotate(0deg); border-top-color: var(--color-accent); }
+  33% { border-top-color: var(--color-info); }
+  66% { border-top-color: var(--color-success); }
+  100% { transform: rotate(360deg); border-top-color: var(--color-accent); }
+}
+
 /* ── Light Theme ── */
 [data-theme="light"] {
   --color-background: #f5f5f7;
@@ -67,7 +112,7 @@
   --image-outline: rgba(0, 0, 0, 0.1);
   --color-text: #1d1d1f;
   --color-text-secondary: #6e6e73;
-  --color-text-muted: #aeaeb2;
+  --color-text-muted: #8f8f98;
   --shadow-sm: 0 1px 2px rgba(18, 18, 24, 0.06), 0 10px 30px rgba(18, 18, 24, 0.06);
   --shadow-md: 0 18px 55px rgba(18, 18, 24, 0.12), 0 4px 14px rgba(18, 18, 24, 0.06);
   --shadow-lg: 0 30px 90px rgba(18, 18, 24, 0.14), 0 8px 24px rgba(18, 18, 24, 0.06);
@@ -100,14 +145,14 @@ body {
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
+::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.12); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.25); }
 
-[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.1); }
-[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.15); }
 
-* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.08) transparent; }
-[data-theme="light"] * { scrollbar-color: rgba(0, 0, 0, 0.1) transparent; }
+* { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.12) transparent; }
+[data-theme="light"] * { scrollbar-color: rgba(0, 0, 0, 0.08) transparent; }
 
 :focus-visible {
   outline: 2px solid var(--color-accent);
@@ -130,9 +175,9 @@ code, kbd, pre {
 /* ── Ambient orb animation ── */
 @keyframes orb-drift {
   0%, 100% { transform: translate(0, 0) scale(1); }
-  25% { transform: translate(30px, -20px) scale(1.05); }
-  50% { transform: translate(-15px, 25px) scale(0.95); }
-  75% { transform: translate(20px, 10px) scale(1.02); }
+  25% { transform: translate(40px, -30px) scale(1.1); }
+  50% { transform: translate(-20px, 40px) scale(0.9); }
+  75% { transform: translate(30px, 15px) scale(1.05); }
 }
 
 /* ── Command input: kill all focus outlines/rings ── */
