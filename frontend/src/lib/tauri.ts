@@ -55,7 +55,11 @@ export function mediaProxyUrl(url: string | null | undefined, mediaType = "image
   const trimmed = (url || "").trim();
   if (!trimmed) return "";
   if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return trimmed;
-  if (trimmed.startsWith("/") || trimmed.includes("127.0.0.1:39143/api/media/proxy")) {
+  if (
+    trimmed.startsWith("/") ||
+    trimmed.includes("127.0.0.1:39143/api/media/proxy") ||
+    trimmed.includes("127.0.0.1:39143/api/local-media")
+  ) {
     return trimmed;
   }
 
@@ -254,11 +258,58 @@ export interface RecommendedResponse extends ApiResponse {
 export interface LikedVideosResponse extends ApiResponse {
   data?: VideoInfo[];
   count?: number;
+  cursor?: number;
+  has_more?: boolean;
 }
 
 export interface LikedAuthorsResponse extends ApiResponse {
   data?: UserInfo[];
   count?: number;
+}
+
+export interface CollectedVideosResponse extends ApiResponse {
+  data?: VideoInfo[];
+  count?: number;
+  cursor?: number;
+  has_more?: boolean;
+}
+
+export interface CollectedMixAuthor {
+  nickname: string;
+  sec_uid: string;
+  avatar_thumb: string;
+}
+
+export interface CollectedMixStats {
+  collect_vv: number;
+  play_vv: number;
+  updated_to_episode: number;
+}
+
+export interface CollectedMixItem {
+  mix_id: string;
+  mix_name: string;
+  desc: string;
+  cover_url: string;
+  author: CollectedMixAuthor;
+  statis: CollectedMixStats;
+  create_time: number;
+  update_time: number;
+  mix_type: number;
+}
+
+export interface CollectedMixesResponse extends ApiResponse {
+  data?: CollectedMixItem[];
+  count?: number;
+  cursor?: number;
+  has_more?: boolean;
+}
+
+export interface MixVideosResponse extends ApiResponse {
+  data?: VideoInfo[];
+  count?: number;
+  cursor?: number;
+  has_more?: boolean;
 }
 
 export interface DownloadProgress {
@@ -979,6 +1030,43 @@ export async function getLikedAuthors(count: number): Promise<LikedAuthorsRespon
   };
 }
 
+export async function getCollectedVideos(cursor: number, count: number): Promise<CollectedVideosResponse> {
+  const result = await invoke<CollectedVideosResponse & { data?: unknown[] }>("get_collected_videos", {
+    cursor,
+    count,
+  });
+  return {
+    ...result,
+    data: Array.isArray(result.data)
+      ? (result.data.map(normalizeLikedVideo).filter(Boolean) as VideoInfo[])
+      : [],
+  };
+}
+
+export async function getCollectedMixes(cursor: number, count: number): Promise<CollectedMixesResponse> {
+  const result = await invoke<CollectedMixesResponse & { data?: CollectedMixItem[] }>("get_collected_mixes", {
+    cursor,
+    count,
+  });
+  return {
+    ...result,
+    data: Array.isArray(result.data) ? result.data : [],
+  };
+}
+
+export async function getMixVideos(seriesId: string, cursor: number, count: number): Promise<MixVideosResponse> {
+  const result = await invoke<MixVideosResponse & { data?: unknown[] }>("get_mix_videos", {
+    seriesId,
+    series_id: seriesId,
+    cursor,
+    count,
+  });
+  return {
+    ...result,
+    data: Array.isArray(result.data) ? normalizeVideos(result.data) : [],
+  };
+}
+
 export async function getComments(awemeId: string, count: number, cursor?: number): Promise<unknown> {
   return invoke("get_comments", { awemeId, count, cursor });
 }
@@ -1045,22 +1133,46 @@ export interface DownloadFilesResult {
   latest: HistoryItem | null;
 }
 
-export async function listDownloadFiles(options?: { offset?: number; limit?: number; forceRefresh?: boolean }): Promise<HistoryItem[]> {
+export async function listDownloadFiles(options?: {
+  offset?: number;
+  limit?: number;
+  forceRefresh?: boolean;
+  query?: string;
+  mediaType?: string;
+  sortBy?: string;
+}): Promise<HistoryItem[]> {
   const result = await invoke<{ success: boolean; items?: unknown[] }>("list_download_files", {
     offset: options?.offset,
     limit: options?.limit,
     forceRefresh: options?.forceRefresh,
+    query: options?.query,
+    mediaType: options?.mediaType,
+    media_type: options?.mediaType,
+    sortBy: options?.sortBy,
+    sort_by: options?.sortBy,
   });
   return (result.items || []).map(normalizeHistoryItem).filter(Boolean) as HistoryItem[];
 }
 
-export async function listDownloadFilesPage(options: { offset?: number; limit?: number; forceRefresh?: boolean } = {}): Promise<DownloadFilesResult> {
+export async function listDownloadFilesPage(options: {
+  offset?: number;
+  limit?: number;
+  forceRefresh?: boolean;
+  query?: string;
+  mediaType?: string;
+  sortBy?: string;
+} = {}): Promise<DownloadFilesResult> {
   const result = await invoke<{ success: boolean; items?: unknown[]; total?: number; total_size?: number; latest?: unknown }>(
     "list_download_files",
     {
       offset: options.offset,
       limit: options.limit,
       forceRefresh: options.forceRefresh,
+      query: options.query,
+      mediaType: options.mediaType,
+      media_type: options.mediaType,
+      sortBy: options.sortBy,
+      sort_by: options.sortBy,
     }
   );
   return {

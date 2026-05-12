@@ -358,8 +358,51 @@ impl DouyinClient {
             .await
     }
 
+    /// 从分享文本中提取第一个可请求链接。
+    fn normalize_share_url_token(value: &str) -> String {
+        let trimmed = value.trim();
+        let end = trimmed
+            .char_indices()
+            .find_map(|(index, ch)| {
+                if "，。！？；、,!;".contains(ch) {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(trimmed.len());
+
+        trimmed[..end]
+            .trim()
+            .trim_end_matches(|ch: char| "，。！？；、,.!;".contains(ch))
+            .to_string()
+    }
+
+    fn extract_share_url(input: &str) -> Option<String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let value = Regex::new(r#"https?://[^\s<>"']+|www\.[^\s<>"']+"#)
+            .ok()
+            .and_then(|re| re.find(trimmed).map(|matched| matched.as_str().to_string()))
+            .unwrap_or_else(|| trimmed.to_string());
+        let value = Self::normalize_share_url_token(&value);
+
+        if value.is_empty() {
+            None
+        } else if value.starts_with("www.") {
+            Some(format!("https://{}", value))
+        } else {
+            Some(value)
+        }
+    }
+
     /// 从 URL 提取视频 ID
     pub fn extract_aweme_id(url: &str) -> Option<String> {
+        let url = url.trim();
+
         // 直接是 aweme_id
         if Regex::new(r"^\d+$").unwrap().is_match(url) {
             return Some(url.to_string());
@@ -370,7 +413,8 @@ impl DouyinClient {
             r"video/(\d+)",
             r"note/(\d+)",
             r"aweme_id=(\d+)",
-            r"/(\d{19})",
+            r"modal_id=(\d+)",
+            r"/(\d{18,21})",
         ];
 
         for pattern in &patterns {
@@ -940,12 +984,19 @@ impl DouyinClient {
         sec_uid: &str,
         max_cursor: i64,
         count: u32,
-    ) -> Result<Vec<LikedVideoItem>> {
+    ) -> Result<(Vec<LikedVideoItem>, i64, bool)> {
         let response = self
             .request_liked_videos_response(sec_uid, max_cursor, count)
             .await?;
 
-        Ok(response["aweme_list"]
+        let cursor = response["max_cursor"]
+            .as_i64()
+            .or_else(|| response["cursor"].as_i64())
+            .or_else(|| response["min_cursor"].as_i64())
+            .unwrap_or(0);
+        let has_more = response["has_more"].as_i64().unwrap_or(0) == 1
+            || response["has_more"].as_bool().unwrap_or(false);
+        let videos = response["aweme_list"]
             .as_array()
             .map(|items| {
                 items
@@ -953,7 +1004,265 @@ impl DouyinClient {
                     .filter_map(|post| self.build_liked_video_item(post))
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default();
+
+        Ok((videos, cursor, has_more))
+    }
+
+    async fn request_collected_videos_response(
+        &self,
+        cursor: i64,
+        count: u32,
+    ) -> Result<serde_json::Value> {
+        let url = "https://www.douyin.com/aweme/v1/web/aweme/listcollection/";
+        let mut query_params = crate::config::get_common_params();
+        query_params.insert("count".to_string(), count.to_string());
+        query_params.insert("cursor".to_string(), cursor.to_string());
+
+        let mut headers = crate::config::get_common_headers(&self.config.cookie);
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection"
+                .to_string(),
+        );
+        headers.insert("Origin".to_string(), "https://www.douyin.com".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded; charset=UTF-8".to_string(),
+        );
+
+        self.enrich_request(&mut query_params, &mut headers).await;
+
+        let params_str = serde_urlencoded::to_string(&query_params)?;
+        let user_agent = headers
+            .get("User-Agent")
+            .map(String::as_str)
+            .unwrap_or_else(|| get_user_agent());
+        query_params.insert(
+            "a_bogus".to_string(),
+            sign::sign_detail(&params_str, user_agent),
+        );
+
+        let mut body_params = HashMap::new();
+        body_params.insert("count", count.to_string());
+        body_params.insert("cursor", cursor.to_string());
+
+        let mut req = self
+            .client
+            .post(url)
+            .query(&query_params)
+            .form(&body_params);
+        for (key, value) in &headers {
+            req = req.header(key, value);
+        }
+
+        let response = req
+            .send()
+            .await
+            .map_err(|error| anyhow!("HTTP request failed: {}", error))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("HTTP error: {}", response.status()));
+        }
+
+        let json = response.json::<serde_json::Value>().await?;
+        Self::ensure_status_ok(&json)?;
+        Ok(json)
+    }
+
+    pub async fn get_collected_videos_python_style(
+        &self,
+        cursor: i64,
+        count: u32,
+    ) -> Result<(Vec<LikedVideoItem>, i64, bool)> {
+        let response = self
+            .request_collected_videos_response(cursor, count)
+            .await?;
+
+        let videos = response["aweme_list"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|post| self.build_liked_video_item(post))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok((
+            videos,
+            Self::json_cursor(&response),
+            Self::json_has_more(&response),
+        ))
+    }
+
+    /// 获取收藏视频列表（返回 VideoInfo，用于批量下载）
+    pub async fn get_collected_videos(
+        &self,
+        cursor: i64,
+        count: u32,
+    ) -> Result<(Vec<VideoInfo>, i64, bool)> {
+        let response = self
+            .request_collected_videos_response(cursor, count)
+            .await?;
+
+        let videos = response["aweme_list"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|post| self.parse_video_info(post).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok((
+            videos,
+            Self::json_cursor(&response),
+            Self::json_has_more(&response),
+        ))
+    }
+
+    /// 获取收藏合集列表
+    pub async fn get_collected_mixes(
+        &self,
+        cursor: i64,
+        count: u32,
+    ) -> Result<(Vec<CollectionMixItem>, i64, bool)> {
+        let mut params = HashMap::new();
+        params.insert("count", count.to_string());
+        params.insert("cursor", cursor.to_string());
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection"
+                .to_string(),
+        );
+
+        let response = self
+            .request_raw_json_with_options(
+                "https://www.douyin.com/aweme/v1/web/mix/listcollection/",
+                Some(params),
+                "GET",
+                Some(headers),
+                false,
+            )
+            .await?;
+        Self::ensure_status_ok(&response)?;
+
+        let mixes = response["mix_infos"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| self.build_collection_mix_item(item))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok((
+            mixes,
+            Self::json_cursor(&response),
+            Self::json_has_more(&response),
+        ))
+    }
+
+    fn build_collection_mix_item(&self, item: &serde_json::Value) -> Option<CollectionMixItem> {
+        let mix_id = item["mix_id"].as_str().unwrap_or_default().to_string();
+        if mix_id.is_empty() {
+            return None;
+        }
+
+        let author = item.get("author");
+        let statis = item.get("statis");
+
+        Some(CollectionMixItem {
+            mix_id,
+            mix_name: item["mix_name"].as_str().unwrap_or_default().to_string(),
+            desc: item["desc"].as_str().unwrap_or_default().to_string(),
+            cover_url: item
+                .get("cover_url")
+                .and_then(|value| value.get("url_list"))
+                .and_then(|value| self.get_first_url_opt(value))
+                .unwrap_or_default(),
+            author: CollectionMixAuthor {
+                nickname: author
+                    .and_then(|value| value["nickname"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                sec_uid: author
+                    .and_then(|value| value["sec_uid"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                avatar_thumb: author
+                    .and_then(|value| value.get("avatar_thumb"))
+                    .and_then(|value| value.get("url_list"))
+                    .and_then(|value| self.get_first_url_opt(value))
+                    .unwrap_or_default(),
+            },
+            statis: CollectionMixStats {
+                collect_vv: statis
+                    .and_then(|value| value["collect_vv"].as_i64())
+                    .unwrap_or(0),
+                play_vv: statis
+                    .and_then(|value| value["play_vv"].as_i64())
+                    .unwrap_or(0),
+                updated_to_episode: statis
+                    .and_then(|value| value["updated_to_episode"].as_i64())
+                    .unwrap_or(0),
+            },
+            create_time: item["create_time"].as_i64().unwrap_or(0),
+            update_time: item["update_time"].as_i64().unwrap_or(0),
+            mix_type: item["mix_type"].as_i64().unwrap_or(0) as i32,
+        })
+    }
+
+    /// 获取合集内的视频列表
+    pub async fn get_mix_videos(
+        &self,
+        series_id: &str,
+        cursor: i64,
+        count: u32,
+    ) -> Result<(Vec<VideoInfo>, i64, bool)> {
+        let mut params = HashMap::new();
+        params.insert("series_id", series_id.to_string());
+        params.insert("pull_type", "2".to_string());
+        params.insert("cursor", cursor.to_string());
+        params.insert("count", count.to_string());
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection"
+                .to_string(),
+        );
+
+        let response = self
+            .request_raw_json_with_options(
+                "https://www.douyin.com/aweme/v1/web/series/aweme/",
+                Some(params),
+                "GET",
+                Some(headers),
+                false,
+            )
+            .await?;
+        Self::ensure_status_ok(&response)?;
+
+        let videos = response["aweme_list"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|post| self.parse_video_info(post).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok((
+            videos,
+            Self::json_cursor(&response),
+            Self::json_has_more(&response),
+        ))
     }
 
     /// 获取无水印视频 URL
@@ -992,6 +1301,29 @@ impl DouyinClient {
             }
         }
         0
+    }
+
+    fn json_has_more(value: &serde_json::Value) -> bool {
+        value["has_more"].as_i64().unwrap_or(0) == 1
+            || value["has_more"].as_bool().unwrap_or(false)
+            || matches!(value["has_more"].as_str(), Some("1" | "true" | "True"))
+    }
+
+    fn json_cursor(value: &serde_json::Value) -> i64 {
+        value["cursor"]
+            .as_i64()
+            .or_else(|| value["max_cursor"].as_i64())
+            .or_else(|| value["min_cursor"].as_i64())
+            .unwrap_or(0)
+    }
+
+    fn ensure_status_ok(value: &serde_json::Value) -> Result<()> {
+        let status_code = value["status_code"].as_i64().unwrap_or(0);
+        if status_code != 0 {
+            let status_msg = value["status_msg"].as_str().unwrap_or("unknown error");
+            return Err(anyhow!("API error: {} (code={})", status_msg, status_code));
+        }
+        Ok(())
     }
 
     /// 搜索用户
@@ -1406,10 +1738,17 @@ impl DouyinClient {
 
     /// 解析分享链接
     pub async fn parse_share_link(&self, url: &str) -> Result<VideoInfo> {
+        let share_url =
+            Self::extract_share_url(url).ok_or_else(|| anyhow!("Share link is empty"))?;
+
+        if let Some(aweme_id) = Self::extract_aweme_id(&share_url) {
+            return self.get_video_detail(&aweme_id).await;
+        }
+
         // 先请求获取重定向后的 URL
         let response = self
             .client
-            .get(url)
+            .get(&share_url)
             .header("User-Agent", get_user_agent())
             .send()
             .await?;
@@ -1503,4 +1842,43 @@ fn looks_like_logged_out_error(message: &str) -> bool {
         || lower.contains("not logged in")
         || lower.contains("login required")
         || lower.contains("session expired")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DouyinClient;
+
+    #[test]
+    fn extracts_share_url_from_copied_text() {
+        let text = "1.23 复制打开抖音 https://v.douyin.com/iRNBho6/，看TA的作品";
+        assert_eq!(
+            DouyinClient::extract_share_url(text).as_deref(),
+            Some("https://v.douyin.com/iRNBho6/")
+        );
+    }
+
+    #[test]
+    fn normalizes_www_share_url() {
+        assert_eq!(
+            DouyinClient::extract_share_url("www.douyin.com/video/7341234567890123456。")
+                .as_deref(),
+            Some("https://www.douyin.com/video/7341234567890123456")
+        );
+    }
+
+    #[test]
+    fn extracts_aweme_id_from_common_link_shapes() {
+        assert_eq!(
+            DouyinClient::extract_aweme_id("https://www.douyin.com/video/7341234567890123456"),
+            Some("7341234567890123456".to_string())
+        );
+        assert_eq!(
+            DouyinClient::extract_aweme_id("https://www.douyin.com/?modal_id=7341234567890123456"),
+            Some("7341234567890123456".to_string())
+        );
+        assert_eq!(
+            DouyinClient::extract_aweme_id("7341234567890123456"),
+            Some("7341234567890123456".to_string())
+        );
+    }
 }

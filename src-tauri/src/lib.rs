@@ -48,7 +48,6 @@ pub(crate) struct DownloadFileIndexCache {
     directory: PathBuf,
     scanned_at: Instant,
     items: Vec<DownloadFileEntry>,
-    total_size: u64,
 }
 
 impl AppState {
@@ -957,17 +956,27 @@ async fn get_liked_videos(
         .get_liked_videos_python_style(&sec_uid, cursor, count)
         .await
     {
-        Ok(videos) if !videos.is_empty() => {
+        Ok((videos, next_cursor, has_more)) if !videos.is_empty() => {
             let count = videos.len();
             Ok(serde_json::json!({
                 "success": true,
                 "data": videos,
-                "count": count
+                "count": count,
+                "cursor": next_cursor,
+                "has_more": has_more
             }))
         }
-        Ok(_) => {
+        Ok((videos, next_cursor, _has_more)) => {
             if let Some(response) = login_required_if_cookie_invalid(&client).await {
                 Ok(response)
+            } else if cursor > 0 {
+                Ok(serde_json::json!({
+                    "success": true,
+                    "data": videos,
+                    "count": 0,
+                    "cursor": next_cursor,
+                    "has_more": false
+                }))
             } else {
                 Ok(verify_required_response(
                     "获取点赞视频失败，请完成验证后重试",
@@ -991,6 +1000,114 @@ async fn get_liked_videos(
     }
 }
 
+/// 获取收藏视频列表
+#[tauri::command]
+async fn get_collected_videos(
+    state: State<'_, AppState>,
+    cursor: i64,
+    count: u32,
+) -> Result<serde_json::Value, String> {
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(cookie_required_response());
+        }
+    };
+
+    match client
+        .get_collected_videos_python_style(cursor, count)
+        .await
+    {
+        Ok((videos, next_cursor, has_more)) => Ok(serde_json::json!({
+            "success": true,
+            "data": videos,
+            "count": videos.len(),
+            "cursor": next_cursor,
+            "has_more": has_more
+        })),
+        Err(error) => Ok(api_login_or_verify_error_response(
+            &client,
+            "获取收藏视频失败",
+            error,
+            "https://www.douyin.com/user/self?showTab=favorite_collection",
+        )
+        .await),
+    }
+}
+
+/// 获取收藏合集列表
+#[tauri::command]
+async fn get_collected_mixes(
+    state: State<'_, AppState>,
+    cursor: i64,
+    count: u32,
+) -> Result<serde_json::Value, String> {
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(cookie_required_response());
+        }
+    };
+
+    match client.get_collected_mixes(cursor, count).await {
+        Ok((mixes, next_cursor, has_more)) => Ok(serde_json::json!({
+            "success": true,
+            "data": mixes,
+            "count": mixes.len(),
+            "cursor": next_cursor,
+            "has_more": has_more
+        })),
+        Err(error) => Ok(api_login_or_verify_error_response(
+            &client,
+            "获取收藏合集失败",
+            error,
+            "https://www.douyin.com/user/self?showTab=favorite_collection",
+        )
+        .await),
+    }
+}
+
+/// 获取合集内的视频列表
+#[tauri::command]
+async fn get_mix_videos(
+    state: State<'_, AppState>,
+    series_id: String,
+    cursor: i64,
+    count: u32,
+) -> Result<serde_json::Value, String> {
+    let series_id = series_id.trim().to_string();
+    if series_id.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "合集ID不能为空"
+        }));
+    }
+
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(cookie_required_response());
+        }
+    };
+
+    match client.get_mix_videos(&series_id, cursor, count).await {
+        Ok((videos, next_cursor, has_more)) => Ok(serde_json::json!({
+            "success": true,
+            "data": videos,
+            "count": videos.len(),
+            "cursor": next_cursor,
+            "has_more": has_more
+        })),
+        Err(error) => Ok(api_login_or_verify_error_response(
+            &client,
+            "获取合集视频失败",
+            error,
+            "https://www.douyin.com/user/self?showTab=favorite_collection",
+        )
+        .await),
+    }
+}
+
 /// 获取点赞作者列表
 #[tauri::command]
 async fn get_liked_authors(
@@ -1005,7 +1122,7 @@ async fn get_liked_authors(
     };
 
     let liked_videos = match client.get_liked_videos_python_style("", 0, count).await {
-        Ok(videos) => videos,
+        Ok((videos, _, _)) => videos,
         Err(e) => {
             let message = e.to_string();
             if looks_like_login_error(&message) {
@@ -1562,7 +1679,7 @@ async fn download_liked_authors(
         .get_liked_videos_python_style("", 0, count.unwrap_or(20))
         .await
     {
-        Ok(videos) => videos,
+        Ok((videos, _, _)) => videos,
         Err(e) => {
             let message = e.to_string();
             if looks_like_login_error(&message) {
@@ -1897,6 +2014,24 @@ fn download_file_media_kind(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn download_file_matches_query(item: &DownloadFileEntry, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    [
+        item.filename.as_str(),
+        item.author.as_str(),
+        item.desc.as_str(),
+        item.id.as_str(),
+        item.path.as_str(),
+        item.file_type.as_str(),
+        item.media_type.as_str(),
+    ]
+    .iter()
+    .any(|value| value.to_lowercase().contains(query))
+}
+
 fn scan_download_directory_entries(
     dir: &Path,
     items: &mut Vec<DownloadFileEntry>,
@@ -1970,6 +2105,9 @@ async fn list_download_files(
     offset: Option<usize>,
     limit: Option<usize>,
     force_refresh: Option<bool>,
+    query: Option<String>,
+    media_type: Option<String>,
+    sort_by: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let target = configured_download_directory(&state).await?;
     let use_cache = !force_refresh.unwrap_or(false);
@@ -1989,14 +2127,41 @@ async fn list_download_files(
         build_download_file_index(target, state.download_file_index.clone()).await?
     };
 
-    let total = index.items.len();
-    let total_size = index.total_size;
-    let latest = index.items.first().cloned();
+    let query = query.unwrap_or_default().trim().to_lowercase();
+    let media_type = media_type
+        .unwrap_or_else(|| "all".to_string())
+        .trim()
+        .to_lowercase();
+    let sort_by = sort_by.unwrap_or_else(|| "date_desc".to_string());
+
+    let mut filtered_items: Vec<DownloadFileEntry> = index
+        .items
+        .into_iter()
+        .filter(|item| {
+            download_file_matches_query(item, &query)
+                && (media_type == "all" || item.media_type.to_lowercase() == media_type)
+        })
+        .collect();
+
+    match sort_by.as_str() {
+        "date_asc" => filtered_items.sort_by_key(|item| item.timestamp),
+        "size_desc" => filtered_items.sort_by_key(|item| std::cmp::Reverse(item.size)),
+        "size_asc" => filtered_items.sort_by_key(|item| item.size),
+        _ => filtered_items.sort_by_key(|item| std::cmp::Reverse(item.timestamp)),
+    }
+
+    let total = filtered_items.len();
+    let total_size = filtered_items.iter().map(|item| item.size).sum::<u64>();
+    let latest = filtered_items.first().cloned();
     let items = match (offset, limit) {
-        (Some(offset), Some(limit)) => index.items.into_iter().skip(offset).take(limit).collect(),
-        (Some(offset), None) => index.items.into_iter().skip(offset).collect(),
-        (None, Some(limit)) => index.items.into_iter().take(limit).collect(),
-        (None, None) => index.items,
+        (Some(offset), Some(limit)) => filtered_items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect(),
+        (Some(offset), None) => filtered_items.into_iter().skip(offset).collect(),
+        (None, Some(limit)) => filtered_items.into_iter().take(limit).collect(),
+        (None, None) => filtered_items,
     };
 
     Ok(serde_json::json!({
@@ -2016,12 +2181,10 @@ async fn build_download_file_index(
         let mut items = Vec::new();
         scan_download_directory_entries(&target, &mut items)?;
         items.sort_by_key(|item| std::cmp::Reverse(item.timestamp));
-        let total_size = items.iter().map(|item| item.size).sum::<u64>();
         Ok::<_, String>(DownloadFileIndexCache {
             directory: target,
             scanned_at: Instant::now(),
             items,
-            total_size,
         })
     })
     .await
@@ -2615,6 +2778,9 @@ pub fn run() {
             get_user_detail,
             get_user_videos,
             get_liked_videos,
+            get_collected_videos,
+            get_collected_mixes,
+            get_mix_videos,
             get_liked_authors,
             get_recommended,
             get_comments,
@@ -2651,7 +2817,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::media_utils::{download_media_type_from_payload, parse_download_media_items};
-    use super::{download_file_media_kind, is_hidden_download_path};
+    use super::{
+        download_file_matches_query, download_file_media_kind, is_hidden_download_path,
+        DownloadFileEntry,
+    };
     use std::path::Path;
 
     #[test]
@@ -2745,5 +2914,25 @@ mod tests {
         assert!(is_hidden_download_path(Path::new(".DS_Store")));
         assert!(is_hidden_download_path(Path::new(".downloaded")));
         assert!(!is_hidden_download_path(Path::new("作品.mp4")));
+    }
+
+    #[test]
+    fn matches_download_files_by_full_index_fields() {
+        let item = DownloadFileEntry {
+            id: "/downloads/作者/风吹过我的头发.mp4".to_string(),
+            filename: "风吹过我的头发".to_string(),
+            path: "/downloads/作者/风吹过我的头发.mp4".to_string(),
+            author: "草坪穿搭".to_string(),
+            desc: String::new(),
+            size: 1024,
+            timestamp: 10,
+            file_type: "mp4".to_string(),
+            media_type: "video".to_string(),
+        };
+
+        assert!(download_file_matches_query(&item, "头发"));
+        assert!(download_file_matches_query(&item, "草坪"));
+        assert!(download_file_matches_query(&item, "mp4"));
+        assert!(!download_file_matches_query(&item, "不存在"));
     }
 }
